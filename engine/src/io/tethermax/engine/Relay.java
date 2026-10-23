@@ -39,6 +39,8 @@ public final class Relay implements AutoCloseable {
     private final Set<Closeable> live = ConcurrentHashMap.newKeySet();
     private final ExecutorService workers = Executors.newCachedThreadPool();
     private volatile boolean stopped;
+    public final AtomicLong uploaded = new AtomicLong();
+    public final AtomicLong downloaded = new AtomicLong();
 
     public Relay(Dialer dialer, String token) {
         if (!token.matches("[a-f0-9]{32}")) throw new IllegalArgumentException("32 hex character pairing code required");
@@ -85,10 +87,10 @@ public final class Relay implements AutoCloseable {
     }
     private void tcp(Endpoint endpoint, Socket remote, InputStream in, OutputStream out) throws IOException {
         Future<?> upload = workers.submit(() -> {
-            try { copy(in, remote.getOutputStream()); remote.shutdownOutput(); }
+            try { copy(in, remote.getOutputStream(), uploaded); remote.shutdownOutput(); }
             catch (IOException e) { closeQuietly(remote); closeQuietly(endpoint); }
         });
-        try { copy(remote.getInputStream(), out); endpoint.shutdownOutput(); await(upload); }
+        try { copy(remote.getInputStream(), out, downloaded); endpoint.shutdownOutput(); await(upload); }
         finally { closeQuietly(remote); closeQuietly(endpoint); upload.cancel(true); }
     }
     private void udp(Endpoint endpoint, DatagramFlow flow, DataInputStream in, DataOutputStream out) throws IOException {
@@ -102,6 +104,7 @@ public final class Relay implements AutoCloseable {
                     if (length > MAX_DATAGRAM) throw new IOException("oversized datagram");
                     byte[] packet = new byte[length]; in.readFully(packet);
                     remote.send(new DatagramPacket(packet, packet.length, flow.peer));
+                    uploaded.addAndGet(packet.length);
                     lastActivity.set(System.nanoTime());
                 }
             } catch (IOException e) { closeQuietly(remote); }
@@ -118,6 +121,7 @@ public final class Relay implements AutoCloseable {
                 if (!flow.peer.equals(packet.getSocketAddress())) continue;
                 lastActivity.set(System.nanoTime());
                 out.writeShort(packet.getLength()); out.write(packet.getData(), packet.getOffset(), packet.getLength()); out.flush();
+                downloaded.addAndGet(packet.getLength());
             }
         } finally { closeQuietly(remote); closeQuietly(endpoint); upload.cancel(true); }
     }
@@ -126,9 +130,9 @@ public final class Relay implements AutoCloseable {
         catch (InterruptedException e) { Thread.currentThread().interrupt(); throw new IOException(e); }
         catch (ExecutionException e) { throw new IOException(e.getCause()); }
     }
-    private static void copy(InputStream in, OutputStream out) throws IOException {
+    private static void copy(InputStream in, OutputStream out, AtomicLong counter) throws IOException {
         byte[] b = new byte[16384]; int n;
-        while ((n = in.read(b)) != -1) { out.write(b, 0, n); out.flush(); }
+        while ((n = in.read(b)) != -1) { out.write(b, 0, n); out.flush(); counter.addAndGet(n); }
     }
     private static void closeQuietly(Closeable c) { try { c.close(); } catch (IOException ignored) {} }
     @Override public synchronized void close() {

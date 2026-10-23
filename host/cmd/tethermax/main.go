@@ -1,13 +1,16 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"flag"
 	"fmt"
 	"github.com/CanKaya4/pdanetnobetci1/host/internal/bridge"
+	"io"
 	"net"
 	"os"
 	"os/signal"
+	"strings"
 )
 
 func run(args []string) error {
@@ -20,6 +23,7 @@ func run(args []string) error {
 	}
 	flags := flag.NewFlagSet("serve", flag.ContinueOnError)
 	approved := flags.Bool("approve-usb-test", false, "explicit operator approval for physical USB traffic test")
+	stdinPairing := flags.Bool("pairing-stdin", false, "read pairing secret from inherited private stdin pipe")
 	address := flags.String("transport", "127.0.0.1:38473", "existing ADB forward endpoint")
 	listen := flags.String("listen", "127.0.0.1:1088", "loopback SOCKS5 address")
 	if err := flags.Parse(args[1:]); err != nil {
@@ -34,7 +38,15 @@ func run(args []string) error {
 	if err := bridge.LoopbackAddress(*listen); err != nil {
 		return err
 	}
-	transport := bridge.Transport{Address: *address, Token: os.Getenv("TETHERMAX_PAIRING_CODE")}
+	token := os.Getenv("TETHERMAX_PAIRING_CODE")
+	if *stdinPairing {
+		line, err := bufio.NewReaderSize(io.LimitReader(os.Stdin, 34), 64).ReadString('\n')
+		if err != nil || len(line) != 33 {
+			return fmt.Errorf("invalid pairing input")
+		}
+		token = strings.TrimSuffix(line, "\n")
+	}
+	transport := bridge.Transport{Address: *address, Token: token}
 	if err := transport.Validate(); err != nil {
 		return err
 	}

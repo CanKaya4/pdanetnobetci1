@@ -15,8 +15,27 @@ public final class MainActivity extends Activity {
     private TextView status;
     private LinearLayout content;
     private int ink, muted, surface, accent;
+    private String shownCode;
+    private TextView traffic;
+    private AlertDialog pairingDialog;
     private final Runnable refresh = new Runnable() {
-        public void run() { status.setText(TunnelService.status); handler.postDelayed(this, 1000); }
+        public void run() {
+            status.setText(TunnelService.status);
+            TunnelService current=TunnelService.instance;
+            if (traffic != null) traffic.setText(TunnelService.networkInfo + "\nOturum yükleme: " + (current==null?0:current.uploaded()) + " bayt\nOturum indirme: " + (current==null?0:current.downloaded()) + " bayt\nUygulama aktarım sayacı; operatör faturalandırma sayacı değildir.");
+            String code = UsbPairing.pendingCode;
+            if (code == null) { shownCode = null; if (pairingDialog != null) { pairingDialog.dismiss(); pairingDialog = null; } }
+            if (code != null && !code.equals(shownCode)) {
+                shownCode = code;
+                if (pairingDialog != null) pairingDialog.dismiss();
+                pairingDialog = new AlertDialog.Builder(MainActivity.this).setTitle("Bilgisayara güvenilsin mi?")
+                    .setMessage("Windows ekranındaki numara aynı mı?\n\n" + code + "\n\nYalnızca kendiniz başlattığınız eşleştirmeyi onaylayın.")
+                    .setPositiveButton("Aynı, güven", (d,w) -> UsbPairing.confirm(code,true))
+                    .setNegativeButton("Reddet", (d,w) -> UsbPairing.confirm(code,false))
+                    .setOnCancelListener(d -> UsbPairing.confirm(code,false)).show();
+            }
+            handler.postDelayed(this, 1000);
+        }
     };
     private int dp(int value) { return Math.round(value * getResources().getDisplayMetrics().density); }
     private TextView text(String value, int size, int color) {
@@ -53,16 +72,11 @@ public final class MainActivity extends Activity {
         action(connection, "Motoru durdur", () -> stopService(new Intent(this, TunnelService.class)));
         LinearLayout pairing = card("EŞLEŞTİRME");
         pairing.addView(text("Anahtar cihazda korunur", 20, ink));
-        pairing.addView(text("Bu önizleme eski protokolü kullanır. Kısa numarayla karşılıklı onay henüz hazır değil. Gizli kod yalnızca isteğinizle gösterilir.", 14, muted));
-        action(pairing, "Mevcut eşleştirme kodunu göster", () -> {
-            try {
-                TextView secret = text(PairingStore.get(this), 18, ink); secret.setPadding(dp(24), dp(20), dp(24), dp(20)); secret.setTextIsSelectable(true);
-                new AlertDialog.Builder(this).setTitle("Gizli eşleştirme kodu").setView(secret).setPositiveButton("Kapat", (d,w) -> secret.setText("")).setOnDismissListener(d -> secret.setText("")).show();
-            } catch (Exception e) { error("Eşleştirme kaydı açılamadı. Güvenlik nedeniyle yeni anahtar otomatik üretilmedi."); }
-        });
+        pairing.addView(text("Windows uygulamasında Bağlan seçeneğini kullanın. İlk bağlantıda iki ekrandaki kısa numarayı karşılaştırın. Sonraki bağlantılarda güvenilen bilgisayar hatırlanır.", 14, muted));
+        action(pairing, "Güvenilen bilgisayarları unut", () -> new AlertDialog.Builder(this).setTitle("Eşleştirmeler silinsin mi?").setMessage("Motor duracak; bilgisayarlara yeniden güven onayı gerekecek.").setPositiveButton("Unut", (d,w) -> { stopService(new Intent(this,TunnelService.class)); UsbPairing.forget(this); }).setNegativeButton("Vazgeç",null).show());
         LinearLayout analysis = card("İNTERNET ANALİZİ");
-        analysis.addView(text("Henüz ölçüm yok", 22, ink));
-        analysis.addView(text("Hız, RTT, paket kaybı ve USB aktarım durumu ölçülmedi. Bu ekran mobil veri tüketen bir test başlatmaz.", 14, muted));
+        traffic = text("Henüz trafik yok", 18, ink); analysis.addView(traffic);
+        analysis.addView(text("Hız, RTT ve paket kaybı henüz ölçülmedi. Bu ekran mobil veri tüketen bir test başlatmaz.", 14, muted));
         LinearLayout scope = card("BU SÜRÜMÜN KAPSAMI");
         scope.addView(text("TCP / UDP aktarım motoru", 20, ink));
         scope.addView(text("Windows SOCKS istemcisi gerekir. Sistem geneli internet, oyun/film profilleri ve adaptif trafik yönetimi henüz uygulanmadı.", 14, muted));

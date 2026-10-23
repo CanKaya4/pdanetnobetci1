@@ -11,23 +11,33 @@ import java.util.concurrent.*;
 
 public final class TunnelService extends Service {
     public static volatile String status = "Durduruldu";
+    public static volatile TunnelService instance;
+    public static volatile String networkInfo = "Hücresel ağ henüz seçilmedi";
+    public long uploaded() { Relay r=relay; return r==null?0:r.uploaded.get(); }
+    public long downloaded() { Relay r=relay; return r==null?0:r.downloaded.get(); }
     private final ExecutorService acceptor = Executors.newSingleThreadExecutor();
     private volatile Network cellular;
     private volatile Relay relay;
     private volatile LocalServerSocket listener;
+    private UsbPairing pairing;
     private volatile boolean stopping;
     private ConnectivityManager manager;
     private ConnectivityManager.NetworkCallback callback;
     @Override public void onCreate() {
         super.onCreate();
+        instance = this;
         NotificationManager notifications = getSystemService(NotificationManager.class);
         notifications.createNotificationChannel(new NotificationChannel("engine", "USB aktarım", NotificationManager.IMPORTANCE_LOW));
         startForeground(1, new Notification.Builder(this, "engine").setContentTitle("TetherMax USB motoru").setContentText("Hücresel bağlantı bekleniyor").setSmallIcon(android.R.drawable.stat_sys_upload_done).build());
         manager = getSystemService(ConnectivityManager.class);
         callback = new ConnectivityManager.NetworkCallback() {
-            @Override public void onAvailable(Network network) { cellular = network; status = "Hücresel bağlantı hazır; USB istemcisi bekleniyor"; }
+            @Override public void onAvailable(Network network) {
+                cellular = network; status = "Hücresel bağlantı hazır; USB istemcisi bekleniyor";
+                LinkProperties properties=manager.getLinkProperties(network);
+                networkInfo="CELLULAR · Network "+network.toString()+" · "+(properties==null?"Arayüz bilgisi yok":properties.getInterfaceName());
+            }
             @Override public void onLost(Network network) {
-                if (network.equals(cellular)) { cellular = null; status = "Hücresel bağlantı kesildi; yeniden başlatın"; stopSelf(); }
+                if (network.equals(cellular)) { cellular = null; status = "Hücresel ağ kesildi; yeniden bağlantı bekleniyor"; networkInfo="Hücresel ağ yok"; }
             }
             @Override public void onUnavailable() { status = "Hücresel bağlantı kullanılamıyor"; stopSelf(); }
         };
@@ -55,6 +65,7 @@ public final class TunnelService extends Service {
                 }
             }, code);
             listener = new LocalServerSocket("io.tethermax.usb.v1");
+            pairing = new UsbPairing(this);
             acceptor.execute(() -> {
                 while (!stopping) {
                     try {
@@ -75,6 +86,8 @@ public final class TunnelService extends Service {
     @Override public int onStartCommand(Intent intent, int flags, int startId) { return START_NOT_STICKY; }
     @Override public void onDestroy() {
         stopping = true;
+        instance = null;
+        if (pairing != null) pairing.close();
         if (listener != null) try { listener.close(); } catch (IOException ignored) {}
         if (relay != null) relay.close(); acceptor.shutdownNow();
         if (manager != null && callback != null) try { manager.unregisterNetworkCallback(callback); } catch (IllegalArgumentException ignored) {}

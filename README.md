@@ -1,5 +1,17 @@
 # TetherMax
 
+## Windows arayüzü ve USB eşleştirme önizlemesi
+
+23 Ekim 2026: WPF Windows uygulaması, 6 haneli karşılıklı ilk güven onayı,
+Android Keystore / Windows DPAPI kimlik saklama ve sonraki bağlantılarda kodsuz
+eşleştirme eklendi. Galaxy A56 Android 16 + Windows 11 üzerinde gerçek USB
+HTTPS ve UDP DNS testleri geçti. Bu, tamamlanmış 1.0 veya sistem geneli internet
+bağlantısı değildir. [Kurulum](docs/windows-preview-tr.md),
+[protokol ve sınırlar](docs/pairing-v2.md), [cihaz kanıtı](docs/device-validation-2026-10-23.md).
+
+Normal kullanımda Windows uygulamasını açıp **Bağlan** seçilir; PowerShell veya
+uzun gizli kod girişi gerekmez. Aşağıdaki CLI/cloud bölümleri geliştirme içindir.
+
 PdaNet'e bağımlı olmayan Android → USB → Windows internet aktarım projesi.
 Uygulama içi kullanım süresi sınırı yoktur. Operatörün hotspot kotası veya tarife
 kurallarının aşılması garanti edilmez; uygulama bu kuralları değiştirmez.

@@ -6,3 +6,5 @@
 /.ci-tools/
 
 __pycache__/
+**/bin/
+**/obj/

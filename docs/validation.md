@@ -1,5 +1,11 @@
 # Validation record — engine preview
 
+**Latest local evidence:** the subsequent real Galaxy A56/Windows11 pairing,
+HTTPS/UDP and installer checks are recorded in
+[device-validation-2026-10-23.md](device-validation-2026-10-23.md).
+The preparation-only sections below are historical; they do not supersede that
+later run. System-wide TUN and performance optimization still remain unverified.
+
 ## Local Galaxy A56 preparation — 2026-10-23
 
 On the user's Windows 11 PC, the selected Internet route was confirmed to use
