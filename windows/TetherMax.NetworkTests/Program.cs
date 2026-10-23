@@ -23,7 +23,7 @@ class Program
     {
         public void Guard(Plan p)=>File.WriteAllText(Path.Combine(folder,"owned-guard"),p.Id.ToString());
         public void Configure(Plan p)=>File.WriteAllText(Path.Combine(folder,"owned-config"),p.Id.ToString());
-        public void RemoveConfiguration(Plan p){if(File.Exists(Path.Combine(folder,"fail-recovery")))throw new IOException("injected recovery failure");File.Delete(Path.Combine(folder,"owned-config"));}
+        public void RemoveConfiguration(Plan p){if(File.Exists(Path.Combine(folder,"fail-recovery")))throw new IOException("injected recovery failure");string file=Path.Combine(folder,"os-process.json");if(File.Exists(file)){using var process=JsonDocument.Parse(File.ReadAllText(file));if(ProcessIdentity.Alive(process.RootElement.GetProperty("pid").GetInt32(),process.RootElement.GetProperty("start").GetInt64()))throw new IOException("OS executor must stop before rollback");}File.Delete(Path.Combine(folder,"owned-config"));}
         public void RemoveGuard(Plan p)=>File.Delete(Path.Combine(folder,"owned-guard"));
     }
     static Process Child(params string[] args)
@@ -40,6 +40,10 @@ class Program
             watcher=Child("--fixture-watch",folder);var ready=Stopwatch.StartNew();
             while(!File.Exists(j.PathFor("watcher-ready"))){if(ready.ElapsedMilliseconds>5000)throw new Exception("watcher did not acknowledge");Thread.Sleep(20);}
         });
+        if(mode=="os-executor") {
+            using var executor=Child("--fixture-os-worker");
+            j.WriteNew("os-process.json",JsonSerializer.Serialize(new{pid=executor.Id,start=executor.StartTime.ToUniversalTime().Ticks}));
+        }
         Console.WriteLine("READY");Console.Out.Flush();
         while(!j.Completed) {
             if(mode!="stall")j.Pulse();
@@ -82,6 +86,7 @@ class Program
     {
         try {
             ProcessLaunch.DetachStandardHandleInheritance();
+            if(args.SequenceEqual(new[]{"--fixture-os-worker"})){await Task.Delay(TimeSpan.FromMinutes(2));return 0;}
             if(args.Length==2&&args[0]=="--fixture-watch"){var j=new Journal(args[1],false);return await Watchdog.Run(j,j.Read(),new FileBackend(args[1]),TimeSpan.FromSeconds(1),()=>{});}
             if(args.Length==3&&args[0]=="--fixture-owner"){await FixtureOwner(args[1],args[2]);return 0;}
             if(args.SequenceEqual(new[]{"--native-isolated-runner"}))return await NativeTests.Run().WaitAsync(TimeSpan.FromMinutes(4));
@@ -110,7 +115,7 @@ class Program
             Require(script.Contains("-PolicyStore ActiveStore")&&script.Contains("128.0.0.0/1")&&rollback.Contains("Adapter identity changed"),"scoped ownership missing");
             Console.WriteLine("PASS transaction faults, recovery order, exact adapter ownership");
             MockCmdlets.Run(p);
-            foreach(string mode in new[]{"owner-crash","stall","watcher-crash","retry"})await FixtureProcessTest(mode);
+            foreach(string mode in new[]{"owner-crash","stall","watcher-crash","retry","os-executor"})await FixtureProcessTest(mode);
             Console.WriteLine("All offline network checks passed; no OS networking or physical USB used.");return 0;
         }catch(Exception e){Console.Error.WriteLine(e);return 1;}
     }

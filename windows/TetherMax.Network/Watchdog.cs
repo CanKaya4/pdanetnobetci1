@@ -8,6 +8,11 @@ public static class Watchdog
     {
         using var lease=journal.Lock();
         if(journal.Completed)return;
+        string executor=journal.PathFor("os-process.json");
+        if(File.Exists(executor)) {
+            using var process=System.Text.Json.JsonDocument.Parse(File.ReadAllText(executor));
+            ProcessIdentity.Stop(process.RootElement.GetProperty("pid").GetInt32(),process.RootElement.GetProperty("start").GetInt64());
+        }
         Transaction.Rollback(p,backend,stop??(()=>ProcessIdentity.Stop(p.WorkerPid,p.WorkerStart)),journal.Complete);
     }
     public static async Task<int> Run(Journal journal,Plan p,IBackend backend,TimeSpan? stall=null,Action? stop=null)

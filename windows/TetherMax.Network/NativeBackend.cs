@@ -17,8 +17,12 @@ public sealed class NativeBackend:IBackend
         // CIM is running, recovery waits for the in-flight command to finish.
         // A delayed interpreter cannot apply after recovery has completed.
         string path=journal.PathFor("os.lock").Replace("'","''"),complete=journal.PathFor("complete").Replace("'","''");
+        string meta=journal.PathFor("os-process.json").Replace("'","''"),temp=journal.PathFor("os-process.tmp").Replace("'","''");
+        string record="$self=Get-Process -Id $PID;$meta=[Text.Encoding]::UTF8.GetBytes(([pscustomobject]@{pid=$PID;start=$self.StartTime.ToUniversalTime().Ticks}|ConvertTo-Json -Compress));"+
+            "$f=[IO.File]::Open('"+temp+"','Create','Write','Read');try{$f.Write($meta,0,$meta.Length);$f.Flush($true)}finally{$f.Dispose()};"+
+            "if(Test-Path -LiteralPath '"+meta+"'){[IO.File]::Replace('"+temp+"','"+meta+"',$null)}else{[IO.File]::Move('"+temp+"','"+meta+"')};";
         string script="$lock=$null;$deadline=[DateTime]::UtcNow.AddSeconds(25);while($null -eq $lock){try{$lock=[IO.File]::Open('"+path+"','OpenOrCreate','ReadWrite','None')}catch{if([DateTime]::UtcNow -ge $deadline){throw};Start-Sleep -Milliseconds 100}};try{"+
-            (applying?"if(Test-Path -LiteralPath '"+complete+"'){throw 'Session already recovered'};":"")+commands+"}finally{$lock.Dispose()}";
+            (applying?"if(Test-Path -LiteralPath '"+complete+"'){throw 'Session already recovered'};":"")+record+commands+"}finally{$lock.Dispose()}";
         PowerShell(script);
     }
     public static string Adapter(Plan p)=>"$a=@(Get-NetAdapter -IncludeHidden | Where-Object { [guid]$_.InterfaceGuid -eq [guid]'"+p.AdapterGuid+"' }); "+
