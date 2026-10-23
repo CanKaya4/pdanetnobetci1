@@ -121,10 +121,10 @@ static class NativeTests
         await using var trap=await FallbackTrap.Start(Bundle,"127.0.0.1:"+javaPort,token);
         async Task<bool> TrapUDP()
         {
-            using var c=new UdpClient(AddressFamily.InterNetwork);c.Connect(IPAddress.Parse("198.18.0.2"),udpPort);
+            using var c=new UdpClient(AddressFamily.InterNetwork);
             using var timeout=new CancellationTokenSource(TimeSpan.FromSeconds(2));
             byte[] bytes=RandomNumberGenerator.GetBytes(64);
-            try{await c.SendAsync(bytes);var response=await c.ReceiveAsync(timeout.Token);return response.Buffer.SequenceEqual(bytes);}catch(SocketException){return false;}catch(OperationCanceledException){return false;}
+            try{c.Connect(IPAddress.Parse("198.18.0.2"),udpPort);await c.SendAsync(bytes);var response=await c.ReceiveAsync(timeout.Token);return response.Buffer.SequenceEqual(bytes);}catch(SocketException){return false;}catch(OperationCanceledException){return false;}
         }
         async Task TrapV6(){using var c=new UdpClient(AddressFamily.InterNetworkV6);try{await c.SendAsync(new byte[]{1},new IPEndPoint(IPAddress.Parse("2001:db8:ffff::1"),32123));}catch(SocketException){}await Task.Delay(1500);}
         Check(await TrapUDP(),"fallback trap positive control failed before guard");

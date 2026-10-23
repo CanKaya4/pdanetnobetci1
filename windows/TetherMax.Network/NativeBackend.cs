@@ -30,8 +30,9 @@ public sealed class NativeBackend:IBackend
         "if(@(Get-NetIPAddress -AddressFamily IPv4 | Where-Object {$_.IPAddress -eq '10.254.88.2'}).Count){throw 'Tunnel address already in use'}; "+
         "if(@(OptionalIPv4 $i | Where-Object {$_.IPAddress -notlike '169.254.*'}).Count){throw 'Owned adapter has existing IPv4 state'}; "+
         "if(@(Get-DnsClientNrptRule | Where-Object {$_.DisplayName -eq '"+p.Tag+"'}).Count){throw 'NRPT ownership conflict'}; "+
-        "Set-NetIPInterface -InterfaceIndex $i -AddressFamily IPv4 -Dhcp Disabled -AutomaticMetric Disabled -InterfaceMetric 1 -NlMtuBytes 1500; "+
+        "Set-NetIPInterface -InterfaceIndex $i -AddressFamily IPv4 -Dhcp Disabled -AutomaticMetric Disabled -InterfaceMetric 1 -NlMtuBytes 1500 -DadTransmits 0; "+
         "New-NetIPAddress -InterfaceIndex $i -AddressFamily IPv4 -IPAddress 10.254.88.2 -PrefixLength 30 -PolicyStore ActiveStore | Out-Null; "+
+        "$until=[DateTime]::UtcNow.AddSeconds(5);do{$assigned=Get-NetIPAddress -InterfaceIndex $i -IPAddress 10.254.88.2;if($assigned.AddressState -eq 'Preferred'){break};Start-Sleep -Milliseconds 100}while([DateTime]::UtcNow -lt $until);if($assigned.AddressState -ne 'Preferred'){throw 'Owned IPv4 address not ready'}; "+
         "Set-DnsClientServerAddress -InterfaceIndex $i -ServerAddresses '1.1.1.1'; "+
         "Add-DnsClientNrptRule -Namespace '.' -NameServers '1.1.1.1' -DisplayName '"+p.Tag+"' -Comment '"+p.Id+"' | Out-Null; "+
         "foreach($prefix in @('0.0.0.0/1','128.0.0.0/1')) { New-NetRoute -InterfaceIndex $i -DestinationPrefix $prefix -NextHop 0.0.0.0 -RouteMetric 1 -PolicyStore ActiveStore | Out-Null }; "+

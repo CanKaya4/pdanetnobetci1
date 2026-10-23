@@ -33,11 +33,15 @@ sealed class FallbackTrap:IAsyncDisposable
         try {
             string select="$a=Get-NetAdapter -IncludeHidden | Where-Object {[guid]$_.InterfaceGuid -eq [guid]'"+guid+"'};if(@($a).Count -ne 1){throw 'trap missing'};$i=$a.ifIndex;";
             NativeBackend.PowerShell(select+
-                "Set-NetIPInterface -InterfaceIndex $i -AddressFamily IPv4 -Dhcp Disabled -NlMtuBytes 1500;"+
+                "Set-NetIPInterface -InterfaceIndex $i -AddressFamily IPv4 -Dhcp Disabled -NlMtuBytes 1500 -DadTransmits 0;"+
+                "Set-NetIPInterface -InterfaceIndex $i -AddressFamily IPv6 -DadTransmits 0;"+
                 "New-NetIPAddress -InterfaceIndex $i -IPAddress 10.254.89.2 -PrefixLength 30 -PolicyStore ActiveStore | Out-Null;"+
                 "New-NetRoute -InterfaceIndex $i -DestinationPrefix 198.18.0.2/32 -NextHop 0.0.0.0 -RouteMetric 1 -PolicyStore ActiveStore | Out-Null;"+
                 "New-NetIPAddress -InterfaceIndex $i -IPAddress 2001:db8:89::2 -PrefixLength 64 -PolicyStore ActiveStore | Out-Null;"+
-                "New-NetRoute -InterfaceIndex $i -DestinationPrefix 2001:db8:ffff::1/128 -NextHop :: -RouteMetric 1 -PolicyStore ActiveStore | Out-Null");
+                "New-NetRoute -InterfaceIndex $i -DestinationPrefix 2001:db8:ffff::1/128 -NextHop :: -RouteMetric 1 -PolicyStore ActiveStore | Out-Null;"+
+                "$until=[DateTime]::UtcNow.AddSeconds(5);do{$ip=Get-NetIPAddress -InterfaceIndex $i -IPAddress 10.254.89.2;if($ip.AddressState -eq 'Preferred'){break};Start-Sleep -Milliseconds 100}while([DateTime]::UtcNow -lt $until);if($ip.AddressState -ne 'Preferred'){throw 'Trap address not ready'};"+
+                "Get-NetIPAddress -InterfaceIndex $i | Select-Object IPAddress,AddressState,InterfaceIndex | ConvertTo-Json -Compress");
+            Console.WriteLine("Native fallback adapter ready: "+name);
             return trap;
         }catch{await trap.DisposeAsync();throw;}
     }
