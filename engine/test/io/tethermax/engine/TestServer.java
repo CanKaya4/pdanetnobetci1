@@ -8,6 +8,7 @@ public final class TestServer {
     public static void main(String[] args) throws Exception {
         String token = System.getenv("TETHERMAX_TEST_TOKEN");
         Relay.Dialer dialer = new Relay.Dialer() {
+            public String networkInfo() { return "1".equals(System.getenv("TETHERMAX_FIXTURE_CELLULAR_ATTESTATION")) ? "CELLULAR fixture-only (not Android hardware)" : "fixture"; }
             private InetAddress address(String host) throws IOException {
                 // Native isolated-runner fixture only. Never compiled into APK.
                 if ("1".equals(System.getenv("TETHERMAX_FIXTURE_MAP_BENCHMARK")) &&

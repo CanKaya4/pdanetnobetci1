@@ -30,32 +30,27 @@ static class NativeTests
         Admission();
         string token=Environment.GetEnvironmentVariable("TETHERMAX_TEST_TOKEN")??throw new Exception("fixture token missing");
         string transport=Environment.GetEnvironmentVariable("TETHERMAX_NATIVE_TRANSPORT")??throw new Exception("fixture transport missing");
-        var j=Journal.Create(Guid.NewGuid());
-        using var worker=Start(Path.Combine(Bundle,"tethermax-engine.exe"),"ip-worker","--approve-adapter-change","--approve-usb-test","--transport",transport,"--wintun-dll",Path.Combine(Bundle,"wintun.dll"),"--journal",j.PathFor("adapter.jsonl"));
-        var errors=worker.StandardError.ReadToEndAsync();
-        worker.StandardInput.NewLine="\n";await worker.StandardInput.WriteLineAsync(token);await worker.StandardInput.FlushAsync();token="";
-        using var cancel=new CancellationTokenSource();
-        Task heartbeat=Task.Run(async()=>{try{while(!cancel.IsCancellationRequested){j.Pulse();await worker.StandardInput.BaseStream.WriteAsync(new byte[]{0},cancel.Token);await worker.StandardInput.BaseStream.FlushAsync(cancel.Token);await Task.Delay(500,cancel.Token);}}catch{}});
-        Plan? p=null;Process? watcher=null;
+        string name="TetherMax-Network-"+Guid.NewGuid().ToString("N");
+        using var pipe=new System.IO.Pipes.NamedPipeServerStream(name,System.IO.Pipes.PipeDirection.InOut,1,System.IO.Pipes.PipeTransmissionMode.Byte,System.IO.Pipes.PipeOptions.Asynchronous|System.IO.Pipes.PipeOptions.CurrentUserOnly);
+        using var helper=Start(Path.Combine(Bundle,"TetherMax.Network.exe"),"connect",name,"--approve-global-route-change","--approve-usb-test");
+        var errors=helper.StandardError.ReadToEndAsync();
+        using var stop=new CancellationTokenSource(TimeSpan.FromSeconds(150));
+        await pipe.WaitForConnectionAsync(stop.Token);
+        using var writer=new StreamWriter(pipe,new UTF8Encoding(false),4096,true){AutoFlush=true,NewLine="\n"};
+        using var reader=new StreamReader(pipe,Encoding.UTF8,false,4096,true);
+        await writer.WriteLineAsync(JsonSerializer.Serialize(new{Transport=transport,Token=token,MaxSeconds=120,MaxPayloadBytes=1048576L}));token="";
+        var pulse=Task.Run(async()=>{try{while(!stop.IsCancellationRequested){await writer.WriteLineAsync("heartbeat");await Task.Delay(500,stop.Token);}}catch{}});
         try {
-            using var deadline=new CancellationTokenSource(TimeSpan.FromSeconds(30));
-            string line=await worker.StandardOutput.ReadLineAsync(deadline.Token)??throw new Exception("Native adapter worker failed: "+await errors);
-            using var identity=JsonDocument.Parse(line);Guid guid=Guid.Parse(identity.RootElement.GetProperty("guid").GetString()!);
-            using var self=Process.GetCurrentProcess();
-            p=new Plan(Guid.NewGuid(),guid,identity.RootElement.GetProperty("adapter").GetString()!,Wfp.Luid(guid),Guid.NewGuid(),Guid.NewGuid(),self.Id,self.StartTime.ToUniversalTime().Ticks,worker.Id,worker.StartTime.ToUniversalTime().Ticks);
-            using(var gate=j.Lock())Transaction.Apply(p,new NativeBackend(j),()=>j.Intent(p),()=>{
-                watcher=Start(Path.Combine(Bundle,"TetherMax.Network.exe"),"watch",j.Folder);var timer=Stopwatch.StartNew();
-                while(!File.Exists(j.PathFor("watcher-ready"))){if(watcher.HasExited||timer.Elapsed>TimeSpan.FromSeconds(10))throw new Exception("Native watcher missing: "+watcher.StandardError.ReadToEnd());Thread.Sleep(25);}
-            });
-            _=Task.Run(async()=>{try{using var log=new StreamWriter(new FileStream(j.PathFor("native-counters.jsonl"),FileMode.CreateNew,FileAccess.Write,FileShare.ReadWrite)){AutoFlush=true};while(await worker.StandardOutput.ReadLineAsync(cancel.Token) is string data)await log.WriteLineAsync(data);}catch{}});
-            Console.WriteLine(j.Folder);Console.Out.Flush();
-            var uptime=Stopwatch.StartNew();
-            while(!worker.HasExited&&!watcher!.HasExited&&uptime.Elapsed<TimeSpan.FromSeconds(120)&&!j.Completed)await Task.Delay(100);
-        } finally {
-            if(p!=null)try{Watchdog.Recover(j,p,new NativeBackend(j));}catch(Exception e){Console.Error.WriteLine(e);}
-            cancel.Cancel();worker.StandardInput.Close();await heartbeat;watcher?.Dispose();
-        }
-        return j.Completed?0:1;
+            while(await reader.ReadLineAsync(stop.Token) is string line) {
+                using var message=JsonDocument.Parse(line);string? type=message.RootElement.GetProperty("type").GetString();
+                if(type=="network-active"){Console.WriteLine(message.RootElement.GetProperty("session").GetString());Console.Out.Flush();}
+                if(type=="network-error")throw new Exception(line);
+                if(type=="network-stopped")break;
+            }
+        }finally{stop.Cancel();pipe.Dispose();await pulse;}
+        await helper.WaitForExitAsync();
+        if(helper.ExitCode!=0)throw new Exception("Production guardian failed: "+await errors);
+        return 0;
     }
     static async Task<byte[]> DnsReply(byte[] q)
     {
@@ -74,6 +69,7 @@ static class NativeTests
         Admission();using var stop=new CancellationTokenSource();
         string token=Convert.ToHexString(RandomNumberGenerator.GetBytes(16)).ToLowerInvariant();
         Environment.SetEnvironmentVariable("TETHERMAX_TEST_TOKEN",token);Environment.SetEnvironmentVariable("TETHERMAX_FIXTURE_MAP_BENCHMARK","1");
+        Environment.SetEnvironmentVariable("TETHERMAX_FIXTURE_CELLULAR_ATTESTATION","1");
         using var java=Start("java","-cp",Path.Combine(Workspace,"build","engine-classes"),"io.tethermax.engine.TestServer");
         var javaErrors=java.StandardError.ReadToEndAsync();
         using var initialTimeout=new CancellationTokenSource(TimeSpan.FromSeconds(15));
@@ -91,7 +87,7 @@ static class NativeTests
         string baseline=NativeBackend.PowerShell("Find-NetRoute -RemoteIPAddress 1.1.1.1 | Select-Object InterfaceIndex,DestinationPrefix,NextHop | ConvertTo-Json -Compress");
         string testsExe=Environment.ProcessPath!;
         try {
-            foreach(string crash in new[]{"guardian","worker","watcher"}) {
+            foreach(string crash in new[]{"gui","guardian","worker","watcher"}) {
                 using var owner=Start(testsExe,"--native-owner");var ownerErrors=owner.StandardError.ReadToEndAsync();Journal? j=null;Plan? p=null;
                 try {
                     using var startTimeout=new CancellationTokenSource(TimeSpan.FromSeconds(90));
@@ -106,7 +102,8 @@ static class NativeTests
                     using var queryTimeout=new CancellationTokenSource(TimeSpan.FromSeconds(10));var reply=await datagram.ReceiveAsync(queryTimeout.Token);Check(reply.Buffer.SequenceEqual(payload),"native UDP mismatch");
                     IPAddress[] addresses=await Dns.GetHostAddressesAsync("tethermax-"+Guid.NewGuid().ToString("N")+".invalid",queryTimeout.Token);
                     Check(addresses.Contains(IPAddress.Parse("198.18.0.1"))&&dnsQueries>0,"Windows DNS did not traverse relay fixture");
-                    if(crash=="guardian"){owner.Kill();await owner.WaitForExitAsync();}
+                    if(crash=="gui"){owner.Kill();await owner.WaitForExitAsync();}
+                    if(crash=="guardian")ProcessIdentity.Stop(p.GuardianPid,p.GuardianStart);
                     if(crash=="worker")ProcessIdentity.Stop(p.WorkerPid,p.WorkerStart);
                     if(crash=="watcher"){int pid=int.Parse(File.ReadAllText(j.PathFor("watcher-ready")));using var watcher=Process.GetProcessById(pid);watcher.Kill();await watcher.WaitForExitAsync();}
                     var timer=Stopwatch.StartNew();while(!j.Completed){if(timer.Elapsed>TimeSpan.FromSeconds(65))throw new Exception("Native independent rollback timeout");await Task.Delay(200);}
@@ -123,6 +120,7 @@ static class NativeTests
             if(!java.HasExited){java.Kill();await java.WaitForExitAsync();}
             await Task.WhenAll(tlsServer,echoServer,dnsServer);
             Environment.SetEnvironmentVariable("TETHERMAX_TEST_TOKEN",null);Environment.SetEnvironmentVariable("TETHERMAX_FIXTURE_MAP_BENCHMARK",null);
+            Environment.SetEnvironmentVariable("TETHERMAX_FIXTURE_CELLULAR_ATTESTATION",null);
         }
         return 0;
     }

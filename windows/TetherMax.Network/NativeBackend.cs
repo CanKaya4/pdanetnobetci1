@@ -28,7 +28,7 @@ public sealed class NativeBackend:IBackend
         "if(@(Get-NetIPAddress -AddressFamily IPv4 | Where-Object {$_.IPAddress -eq '10.254.88.2'}).Count){throw 'Tunnel address already in use'}; "+
         "if(@(Get-NetIPAddress -InterfaceIndex $i -AddressFamily IPv4 | Where-Object {$_.IPAddress -notlike '169.254.*'}).Count){throw 'Owned adapter has existing IPv4 state'}; "+
         "if(@(Get-DnsClientNrptRule | Where-Object {$_.DisplayName -eq '"+p.Tag+"'}).Count){throw 'NRPT ownership conflict'}; "+
-        "Set-NetIPInterface -InterfaceIndex $i -AddressFamily IPv4 -Dhcp Disabled -AutomaticMetric Disabled -InterfaceMetric 1; "+
+        "Set-NetIPInterface -InterfaceIndex $i -AddressFamily IPv4 -Dhcp Disabled -AutomaticMetric Disabled -InterfaceMetric 1 -NlMtuBytes 1500; "+
         "New-NetIPAddress -InterfaceIndex $i -AddressFamily IPv4 -IPAddress 10.254.88.2 -PrefixLength 30 -PolicyStore ActiveStore | Out-Null; "+
         "Set-DnsClientServerAddress -InterfaceIndex $i -ServerAddresses '1.1.1.1'; "+
         "Add-DnsClientNrptRule -Namespace '.' -NameServers '1.1.1.1' -DisplayName '"+p.Tag+"' -Comment '"+p.Id+"' | Out-Null; "+

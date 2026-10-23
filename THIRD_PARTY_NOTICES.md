@@ -17,9 +17,11 @@ host/go.sum for versions and module integrity checks):
   BSD-3-Clause and the Go patent grant.
 
 Their upstream license, patent and author notices are retained in docs/licenses
-and included in Windows packages. Wintun is not bundled in the application; the
-native worker requires an explicitly supplied, checksum-pinned official amd64
-DLL. Its ownership and test boundary are documented in docs/ip-engine.md.
+and included in Windows packages. The 0.5 native Windows preview bundles the
+unaltered official amd64 Wintun 0.14.1 DLL, accessed only through its published
+API. Its complete prebuilt-binary license is shipped as WINTUN-LICENSE.txt.
+The native worker retains SHA256 and Authenticode checks. No driver is installed
+or loaded by the MSI; loading requires the separate approved network action.
 
 Research references (not bundled, linked, translated or copied into this release):
 

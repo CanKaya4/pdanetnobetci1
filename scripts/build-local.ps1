@@ -25,6 +25,12 @@ try {
   & "$bt/apksigner.bat" sign --v4-signing-enabled false --ks build/android/debug.keystore --ks-pass pass:android --ks-key-alias androiddebugkey --out build/artifacts/tethermax-android-pairing-preview.apk "$out/aligned.apk"; Check
   & "$bt/apksigner.bat" verify --verbose build/artifacts/tethermax-android-pairing-preview.apk; Check
   dotnet build windows/TetherMax.Desktop -c Release -o $DesktopOutput; Check
+  dotnet publish windows/TetherMax.Network -c Release -r win-x64 --self-contained false -o $DesktopOutput; Check
+  $wintun=Join-Path $root '.ci-tools/wintun-0.14.1/wintun/bin/amd64/wintun.dll'
+  if((Get-FileHash $wintun -Algorithm SHA256).Hash -ne 'E5DA8447DC2C320EDC0FC52FA01885C103DE8C118481F683643CACC3220DAFCE'){throw 'Wintun checksum mismatch'}
+  if((Get-AuthenticodeSignature $wintun).Status -ne 'Valid'){throw 'Wintun signature invalid'}
+  Copy-Item $wintun (Join-Path $DesktopOutput 'wintun.dll')
+  Copy-Item .ci-tools/wintun-0.14.1/wintun/LICENSE.txt (Join-Path $DesktopOutput 'WINTUN-LICENSE.txt')
   $env:GOROOT=(Resolve-Path .ci-tools/go).Path; $env:GOTOOLCHAIN='go1.26.3'; $env:GOCACHE="$root\.ci-tools\go-cache"
   Push-Location host
   $engineOutput=Join-Path $root (Join-Path $DesktopOutput 'tethermax-engine.exe')

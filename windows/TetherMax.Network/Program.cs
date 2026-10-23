@@ -26,6 +26,18 @@ public static class Program
         }catch(Exception e){Console.Error.WriteLine(e.Message);return 1;}
     }
     sealed record Request(string Transport,string Token,int MaxSeconds,long MaxPayloadBytes);
+    static async Task<string> CellularStatus(string engine,string transport,string bearer)
+    {
+        var start=new ProcessStartInfo(engine){UseShellExecute=false,CreateNoWindow=true,RedirectStandardInput=true,RedirectStandardOutput=true,RedirectStandardError=true};
+        foreach(string arg in new[]{"cellular-status","--approve-usb-test","--transport",transport})start.ArgumentList.Add(arg);
+        using var p=Process.Start(start)??throw new IOException("Cellular status process did not start");
+        p.StandardInput.NewLine="\n";await p.StandardInput.WriteLineAsync(bearer);p.StandardInput.Close();
+        var output=p.StandardOutput.ReadToEndAsync();var error=p.StandardError.ReadToEndAsync();
+        using var deadline=new CancellationTokenSource(TimeSpan.FromSeconds(8));
+        try{await p.WaitForExitAsync(deadline.Token);}catch{p.Kill();throw;}
+        string data=await output;if(data.Length>8192||p.ExitCode!=0)throw new IOException("Cellular source rejected: "+await error);
+        return data;
+    }
     static async Task<int> Connect(string pipeName)
     {
         using var single=new Mutex(false,"Global\\TetherMax-Network-Session-v1");
@@ -51,6 +63,8 @@ public static class Program
             if(File.Exists(Path.Combine(folder,"intent.json"))&&!File.Exists(Path.Combine(folder,"complete")))throw new IOException("Unrecovered prior network session: "+folder);
         Guid id=Guid.NewGuid();var journal=Journal.Create(id);
         string engine=Path.Combine(AppContext.BaseDirectory,"tethermax-engine.exe"),dll=Path.Combine(AppContext.BaseDirectory,"wintun.dll");
+        string bearer=request.Token;
+        journal.WriteNew("android-before.json",await CellularStatus(engine,request.Transport,bearer));
         var start=new ProcessStartInfo(engine){UseShellExecute=false,CreateNoWindow=true,RedirectStandardInput=true,RedirectStandardOutput=true,RedirectStandardError=true};
         foreach(string arg in new[]{"ip-worker","--approve-adapter-change","--approve-usb-test","--transport",request.Transport,"--payload-budget-bytes",request.MaxPayloadBytes.ToString(System.Globalization.CultureInfo.InvariantCulture),"--wintun-dll",dll,"--journal",journal.PathFor("adapter.jsonl")})start.ArgumentList.Add(arg);
         using var worker=Process.Start(start)??throw new IOException("IP worker did not start");
@@ -89,6 +103,8 @@ public static class Program
             while(!lifetime.IsCancellationRequested&&!worker.HasExited&&watcher is {HasExited:false}&&(maxSeconds==0||uptime.Elapsed<TimeSpan.FromSeconds(maxSeconds)))await Task.Delay(100,lifetime.Token);
         }catch(Exception e){try{await Send(new{type="network-error",message=e.Message});}catch{}}
         finally {
+            try{journal.WriteNew("android-after.json",await CellularStatus(engine,request.Transport,bearer));}catch(Exception e){try{journal.WriteNew("android-after-error.txt",e.Message);}catch{}}
+            bearer="";
             // Keep worker heartbeat alive until routes/DNS are removed. If the
             // worker already died, recovery still removes NRPT and persistent WFP.
             bool recovered=false;
