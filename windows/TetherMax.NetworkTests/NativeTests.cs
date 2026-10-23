@@ -28,11 +28,14 @@ static class NativeTests
     public static async Task<int> Rescue()
     {
         Admission();var lifetime=Stopwatch.StartNew();string done=Path.Combine(Workspace,"build","reports","native-rescue-finished");
+        int parent=int.Parse(Environment.GetEnvironmentVariable("TETHERMAX_NATIVE_TEST_PID")!);
+        long parentStart=long.Parse(Environment.GetEnvironmentVariable("TETHERMAX_NATIVE_TEST_START")!);
         while(lifetime.Elapsed<TimeSpan.FromMinutes(15)&&!File.Exists(done)) {
+            bool parentAlive=ProcessIdentity.Alive(parent,parentStart);
             foreach(string folder in Directory.EnumerateDirectories(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData),"TetherMax-Network-*")) {
                 if(File.Exists(Path.Combine(folder,"complete")))continue;
                 string stamp=File.Exists(Path.Combine(folder,"intent.json"))?"intent.json":"controller-process.json";
-                if(!File.Exists(Path.Combine(folder,stamp))||DateTime.UtcNow-File.GetLastWriteTimeUtc(Path.Combine(folder,stamp))<TimeSpan.FromSeconds(90))continue;
+                if(!File.Exists(Path.Combine(folder,stamp))||(parentAlive&&DateTime.UtcNow-File.GetLastWriteTimeUtc(Path.Combine(folder,stamp))<TimeSpan.FromSeconds(90)))continue;
                 // Disposable-VM emergency ONLY: restore runner control-plane
                 // access so a failed fail-closed test can publish diagnostics.
                 // This mode is never packaged into the product or counted PASS.
@@ -48,6 +51,7 @@ static class NativeTests
                     using var wfp=new Wfp();wfp.Remove(p);
                 }catch(Exception e){File.AppendAllText(log,e+Environment.NewLine);}
             }
+            if(!parentAlive)return 1;
             await Task.Delay(1000);
         }
         return 0;
@@ -94,6 +98,7 @@ static class NativeTests
     public static async Task<int> Run()
     {
         Admission();using var stop=new CancellationTokenSource();
+        using(var parent=Process.GetCurrentProcess()){Environment.SetEnvironmentVariable("TETHERMAX_NATIVE_TEST_PID",parent.Id.ToString());Environment.SetEnvironmentVariable("TETHERMAX_NATIVE_TEST_START",parent.StartTime.ToUniversalTime().Ticks.ToString());}
         using var rescue=Start(Environment.ProcessPath!,"--native-rescue");
         string token=Convert.ToHexString(RandomNumberGenerator.GetBytes(16)).ToLowerInvariant();
         Environment.SetEnvironmentVariable("TETHERMAX_TEST_TOKEN",token);Environment.SetEnvironmentVariable("TETHERMAX_FIXTURE_MAP_BENCHMARK","1");

@@ -82,7 +82,7 @@ class Program
         try {
             if(args.Length==2&&args[0]=="--fixture-watch"){var j=new Journal(args[1],false);return await Watchdog.Run(j,j.Read(),new FileBackend(args[1]),TimeSpan.FromSeconds(1),()=>{});}
             if(args.Length==3&&args[0]=="--fixture-owner"){await FixtureOwner(args[1],args[2]);return 0;}
-            if(args.SequenceEqual(new[]{"--native-isolated-runner"}))return await NativeTests.Run();
+            if(args.SequenceEqual(new[]{"--native-isolated-runner"}))return await NativeTests.Run().WaitAsync(TimeSpan.FromMinutes(4));
             if(args.SequenceEqual(new[]{"--native-rescue"}))return await NativeTests.Rescue();
             if(args.Length==1&&args[0]=="--native-owner")return await NativeTests.Owner();
             if(args.Length!=0)throw new Exception("Unknown test mode");
