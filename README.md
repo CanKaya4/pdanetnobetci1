@@ -3,18 +3,21 @@
 ## Öncelik güncellemesi — 23 Ekim 2026
 
 Ana hedef standart Android hotspot/RNDIS internetine ihtiyaç duymayan USB
-aktarımıdır. **Sistem geneli Windows aktarımı henüz tamamlanmadı.** Mevcut
-SOCKS/in-memory IP testleri normal Windows trafiğinin TetherMax'ten geçtiği
-anlamına gelmez. Oyun/TV/profil geliştirmeleri bu hedefin önüne geçmez.
+aktarımıdır. **0.5 native ağ backend'i artık uygulanmıştır; kullanıcı bilgisayarında
+henüz etkinleştirilmedi veya doğrulanmadı.** SOCKS/in-memory IP testi ile sistem
+geneli Wintun testi ayrı tutulur. Oyun/TV/profil geliştirmeleri ertelenmiştir.
 
 Yeni Windows **Windows ağ yolu raporu** düğmesi seçili gerçek adaptörleri,
 rota/DNS yapılandırmasını ve adaptör sayaçlarını salt okunur kaydeder.
-`route-plan` yalnızca izole /32 planı üretir (`CanApply=false`); rota uygulamaz.
+`route-plan` inceleme için dry-run kalır; gerçek backend ayrı
+`TetherMax.Network` sürecindedir. WPF **Sistem geneli USB testi** ayrı somut onay
+ve UAC gerektirir. Test 120 saniye / 1 MiB relay payload ile sınırlıdır.
 `ip-check` başlangıç/bitiş hücresel ağ bilgisini ve Android sayaçlarını sınar;
 sistem geneli veya hotspot-off doğrulaması olarak raporlamaz.
 
 [PdaNet karşılaştırması ve kalan kritik işler](docs/pdanet-comparison-2026-10-23.md)
 · [Kontrollü operatör ölçümü](docs/controlled-usage-study.md)
+· [Native ağ yaşam döngüsü ve fiziksel geçiş planı](docs/native-network.md)
 
 ## Windows arayüzü ve USB eşleştirme önizlemesi
 

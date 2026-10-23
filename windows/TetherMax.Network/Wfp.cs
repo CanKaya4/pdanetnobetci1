@@ -60,6 +60,12 @@ public sealed class Wfp:IDisposable
         // existing sockets and more-specific LAN/RNDIS routes. IPv6 is blocked.
         var list=new List<Condition>{new(){Key=new Guid("632ce23b-5167-435c-86d7-e903684aa80c"),Match=8,Value=new Value{Type=3,Data=1}}};
         IntPtr luid=Marshal.AllocHGlobal(8);Marshal.WriteInt64(luid,unchecked((long)p.Luid));
+        IntPtr loopback=Marshal.AllocHGlobal(16);Marshal.Copy(new byte[]{0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1},0,loopback,16);
+        // The authenticated USB transport uses 127.0.0.1. Exclude it explicitly
+        // as well as the loopback flag; transport liveness must not depend on
+        // how a Windows version marks an outbound packet's loopback flag.
+        list.Add(new Condition{Key=new Guid("b235ae9a-1d64-49b8-a44c-5ff3d9095045"),Match=10,
+            Value=ipv4?new Value{Type=3,Data=0x7f000001}:new Value{Type=11,Data=unchecked((ulong)loopback.ToInt64())}});
         if(ipv4)list.Add(new Condition{Key=new Guid("4cd62a49-59c3-4969-b7f3-bda5d32890a4"),Match=10,Value=new Value{Type=4,Data=unchecked((ulong)luid.ToInt64())}});
         IntPtr conditions=Marshal.AllocHGlobal(Marshal.SizeOf<Condition>()*list.Count);
         try {
@@ -67,7 +73,7 @@ public sealed class Wfp:IDisposable
             var f=new Filter{Key=key,Display=new Display{Name=name},Flags=1,Layer=layer,Sublayer=p.Id,
                 Weight=new Value{Type=1,Data=15},Count=(uint)list.Count,Conditions=conditions,Action=new ActionType{Type=0x1001}};
             Check(FwpmFilterAdd0(engine,ref f,IntPtr.Zero,out _));
-        }finally{Marshal.FreeHGlobal(conditions);Marshal.FreeHGlobal(luid);}
+        }finally{Marshal.FreeHGlobal(conditions);Marshal.FreeHGlobal(luid);Marshal.FreeHGlobal(loopback);}
     }
     public void Remove(Plan p)
     {
