@@ -25,6 +25,12 @@ static class NativeTests
         var s=new ProcessStartInfo(file){UseShellExecute=false,CreateNoWindow=true,RedirectStandardInput=true,RedirectStandardOutput=true,RedirectStandardError=true};
         foreach(string arg in args)s.ArgumentList.Add(arg);return Process.Start(s)??throw new IOException("Isolated test process failed");
     }
+    static string SettingsSnapshot()=>NativeBackend.PowerShell("[pscustomobject]@{"+
+        "adapters=@(Get-NetAdapter -IncludeHidden|Sort-Object InterfaceGuid|Select-Object Name,InterfaceGuid,ifIndex);"+
+        "interfaces=@(Get-NetIPInterface|Sort-Object InterfaceIndex,AddressFamily|Select-Object InterfaceIndex,AddressFamily,Dhcp,AutomaticMetric,InterfaceMetric,NlMtu);"+
+        "routes=@(Get-NetRoute -PolicyStore ActiveStore|Sort-Object InterfaceIndex,DestinationPrefix,NextHop,RouteMetric|Select-Object InterfaceIndex,AddressFamily,DestinationPrefix,NextHop,RouteMetric);"+
+        "dns=@(Get-DnsClientServerAddress|Sort-Object InterfaceIndex,AddressFamily|Select-Object InterfaceIndex,AddressFamily,ServerAddresses);"+
+        "nrpt=@(Get-DnsClientNrptRule|Sort-Object Name|Select-Object Name,Namespace,NameServers,DisplayName,Comment)}|ConvertTo-Json -Depth 7 -Compress");
     public static async Task<int> Rescue()
     {
         Admission();var lifetime=Stopwatch.StartNew();string done=Path.Combine(Workspace,"build","reports","native-rescue-finished");
@@ -134,6 +140,7 @@ static class NativeTests
         async Task TrapV6(){using var c=new UdpClient(AddressFamily.InterNetworkV6);try{await c.SendAsync(new byte[]{1},new IPEndPoint(IPAddress.Parse("2001:db8:ffff::1"),32123));}catch(SocketException){}await Task.Delay(1500);}
         Check(await TrapUDP(),"fallback trap positive control failed before guard");
         await Task.Delay(2000);long v6Before=trap.Rejected;await TrapV6();Check(trap.Rejected>v6Before,"IPv6 trap positive control did not observe packets");
+        string settingsBefore=SettingsSnapshot();File.WriteAllText(Path.Combine(Workspace,"build","reports","settings-before.json"),settingsBefore);
         string testsExe=Environment.ProcessPath!;
         try {
             foreach(string crash in new[]{"gui","guardian","worker","watcher"}) {
@@ -163,7 +170,13 @@ static class NativeTests
                     if(crash=="watcher"){int pid=int.Parse(File.ReadAllText(j.PathFor("watcher-ready")));using var watcher=Process.GetProcessById(pid);watcher.Kill();await watcher.WaitForExitAsync();}
                     var timer=Stopwatch.StartNew();while(!j.Completed){if(timer.Elapsed>TimeSpan.FromSeconds(65))throw new Exception("Native independent rollback timeout");await Task.Delay(200);}
                     using(var wfp=new Wfp()){Check(!wfp.Exists(p.V4Filter)&&!wfp.Exists(p.V6Filter),"native filter leak");}
+                    var removal=Stopwatch.StartNew();
+                    while(NativeBackend.PowerShell("@(Get-NetAdapter -IncludeHidden|Where-Object {[guid]$_.InterfaceGuid -eq [guid]'"+p.AdapterGuid+"'}).Count").Trim()!="0") {
+                        if(removal.Elapsed>TimeSpan.FromSeconds(15))throw new Exception("Owned adapter still present after rollback");await Task.Delay(200);
+                    }
                     string restored=NativeBackend.PowerShell("Find-NetRoute -RemoteIPAddress 1.1.1.1 | Select-Object InterfaceIndex,DestinationPrefix,NextHop | ConvertTo-Json -Compress");Check(restored==baseline,"previous Windows route was not restored");
+                    string settingsAfter=SettingsSnapshot();File.WriteAllText(Path.Combine(Workspace,"build","reports","settings-after-"+crash+".json"),settingsAfter);
+                    Check(settingsAfter==settingsBefore,"adapter/IP-interface/route/DNS/NRPT settings not fully restored");
                     Check(await TrapUDP(),"rollback did not restore ordinary alternate-path behavior");
                     Console.WriteLine("PASS native Wintun -> gVisor -> Java loopback HTTPS/UDP/Windows DNS; "+crash+" crash rollback");
                 }finally {

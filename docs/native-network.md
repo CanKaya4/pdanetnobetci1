@@ -41,6 +41,8 @@ olduğu uygulamanın sayaçlarından anlaşılamaz; ayrıca kullanıcı gözlemi
   DNS/rota/IP nesneleri → worker/adapter → WFP filtreleri → tamamlandı kaydı.
   Hata varsa WFP kaldırılmaz. CIM alt süreci de kendi OS kilidini tutar;
   geç başlayan eski işlem kurtarma tamamlandıktan sonra tekrar ayar uygulayamaz.
+  CIM yorumlayıcısının PID/başlangıç zamanı da atomik ve kalıcı kaydedilir;
+  guardian ölürse kurtarma önce yalnızca bu sahip olunan yorumlayıcıyı durdurur.
 
 WFP filtreleri dinamik oturum filtresi değildir: guardian/watchdog ikisi de
 ölürse engel sessizce düşmez. Ancak otomatik iyileşme bu çift arızada garanti
@@ -93,3 +95,7 @@ Host örnekleri `host-counters.jsonl`, Android önce/sonra kontrol sayıları
 olarak ayrı kaydedilir. Ani process kill'de son host örneği eksik kalabilir;
 periodik örnek, operatör muhasebesiyle eşit veya kesin tam toplam değildir.
 Android sayaçları tüm relay oturumlarını kapsar; paralel istemci olmamalıdır.
+
+Native API başvuruları: [WFP filtre yapısı](https://learn.microsoft.com/en-us/windows/win32/api/fwpmtypes/ns-fwpmtypes-fwpm_filter0),
+[katmana göre koşullar](https://learn.microsoft.com/en-us/windows/win32/fwp/filtering-conditions-available-at-each-filtering-layer),
+[oturum ömrü](https://learn.microsoft.com/en-us/windows/win32/api/fwpmtypes/ns-fwpmtypes-fwpm_session0).
