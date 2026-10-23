@@ -105,6 +105,7 @@ static class NativeTests
         Environment.SetEnvironmentVariable("TETHERMAX_FIXTURE_CELLULAR_ATTESTATION","1");
         using var java=Start("java","-cp",Path.Combine(Workspace,"build","engine-classes"),"io.tethermax.engine.TestServer");
         var javaErrors=java.StandardError.ReadToEndAsync();
+        try {
         using var initialTimeout=new CancellationTokenSource(TimeSpan.FromSeconds(15));
         string javaPort=await java.StandardOutput.ReadLineAsync(initialTimeout.Token)??throw new Exception("Java peer failed");
         Environment.SetEnvironmentVariable("TETHERMAX_NATIVE_TRANSPORT","127.0.0.1:"+int.Parse(javaPort));
@@ -173,5 +174,6 @@ static class NativeTests
         Check(!File.Exists(Path.Combine(Workspace,"build","reports","native-rescue.log")),"Disposable VM emergency recovery was required; native implementation failed");
         File.WriteAllText(Path.Combine(Workspace,"build","reports","native-rescue-finished"),"done");
         return 0;
+        }finally{stop.Cancel();if(!java.HasExited){java.Kill();await java.WaitForExitAsync();}}
     }
 }

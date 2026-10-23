@@ -54,6 +54,7 @@ class Program
         File.WriteAllText(Path.Combine(folder,"outside-sentinel"),"preserve");
         using var owner=Child("--fixture-owner",folder,mode);
         try {
+            ProcessLaunch.DetachStandardHandleInheritance();
             using var timeout=new CancellationTokenSource(TimeSpan.FromSeconds(10));
             Require(await owner.StandardOutput.ReadLineAsync(timeout.Token)=="READY","fixture owner did not start");
             var j=new Journal(folder,false);var p=j.Read();

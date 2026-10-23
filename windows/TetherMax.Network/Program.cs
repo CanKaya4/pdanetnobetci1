@@ -17,6 +17,7 @@ public static class Program
     public static async Task<int> Main(string[] args)
     {
         try {
+            ProcessLaunch.DetachStandardHandleInheritance();
             if(args.Length==0||args.SequenceEqual(new[]{"status"})) {Console.WriteLine("TetherMax network controller inactive; no OS changes. connect requires separate global routing and USB consent.");return 0;}
             if(args.Length==2&&args[0]=="watch") {Admin();var j=new Journal(args[1]);return await Watchdog.Run(j,j.Read(),new NativeBackend(j));}
             if(args.Length==3&&args[0]=="recover"&&args[2]=="--approve-network-recovery") {Admin();var j=new Journal(args[1]);Watchdog.Recover(j,j.Read(),new NativeBackend(j));return 0;}

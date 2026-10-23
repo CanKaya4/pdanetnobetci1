@@ -19,7 +19,7 @@ sealed class FallbackTrap:IAsyncDisposable
         this.process=process;Name=name;this.guid=guid;
         errors=process.StandardError.ReadToEndAsync();
         heartbeat=Task.Run(async()=>{try{while(!stop.IsCancellationRequested){await process.StandardInput.BaseStream.WriteAsync(new byte[]{0},stop.Token);await process.StandardInput.BaseStream.FlushAsync(stop.Token);await Task.Delay(500,stop.Token);}}catch{}});
-        telemetry=Task.Run(async()=>{try{while(await process.StandardOutput.ReadLineAsync(stop.Token) is string line){using var doc=JsonDocument.Parse(line);if(doc.RootElement.TryGetProperty("counters",out var counters))Interlocked.Exchange(ref rejected,counters.GetProperty("Rejected").GetInt64());}}catch{}});
+        telemetry=Task.Run(async()=>{try{while(await process.StandardOutput.ReadLineAsync() is string line){using var doc=JsonDocument.Parse(line);if(doc.RootElement.TryGetProperty("counters",out var counters))Interlocked.Exchange(ref rejected,counters.GetProperty("Rejected").GetInt64());}}catch{}});
     }
     public static async Task<FallbackTrap> Start(string bundle,string transport,string token)
     {
@@ -46,7 +46,7 @@ sealed class FallbackTrap:IAsyncDisposable
             if(p.HasExited)throw new Exception("Fallback data worker exited before probe: "+await trap.errors.WaitAsync(TimeSpan.FromSeconds(2)));
             Console.WriteLine("Native fallback adapter ready: "+state);
             return trap;
-        }catch{await trap.DisposeAsync();throw;}
+        }catch(Exception cause){string worker=p.HasExited?await trap.errors.WaitAsync(TimeSpan.FromSeconds(2)):"worker still running";try{await trap.DisposeAsync();}catch{}throw new Exception("Native fallback setup failed; "+worker,cause);}
     }
     public async ValueTask DisposeAsync()
     {
