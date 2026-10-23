@@ -33,7 +33,9 @@ public final class TunnelService extends Service {
         };
         try {
             manager.requestNetwork(new NetworkRequest.Builder().addTransportType(NetworkCapabilities.TRANSPORT_CELLULAR).addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET).build(), callback);
-            String code = getSharedPreferences("pairing", MODE_PRIVATE).getString("code", "");
+            String code;
+            try { code = PairingStore.get(this); }
+            catch (Exception e) { throw new IOException("Pairing storage unavailable", e); }
             relay = new Relay(new Relay.Dialer() {
                 private Network network() throws IOException { Network n = cellular; if (n == null) throw new IOException("cellular unavailable"); return n; }
                 public Socket tcp(String host, int port) throws IOException {
