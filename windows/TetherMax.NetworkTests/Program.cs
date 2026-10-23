@@ -102,6 +102,7 @@ class Program
                 Require(!complete&&b.Guarded,"recovery failure opened fallback");
             }
             string script=NativeBackend.ConfigureScript(p),rollback=NativeBackend.RemoveScript(p);
+            string selection=NativeBackend.PowerShell("function Get-NetAdapter {param([switch]$IncludeHidden) [pscustomobject]@{InterfaceGuid='{''GUID''}';Name='TetherMax-IP-aabbccdd'}}; ".Replace("{''GUID''}","{"+p.AdapterGuid+"}")+NativeBackend.Adapter(p)+"if($a.Count -ne 1){throw 'Brace-wrapped string GUID selection regression'}");
             Require(!script.Contains("Remove-NetRoute")&&!script.Contains("Disable-NetAdapter")&&!script.Contains("Set-NetFirewallProfile"),"unscoped network mutation");
             Require(script.Contains("-PolicyStore ActiveStore")&&script.Contains("128.0.0.0/1")&&rollback.Contains("Adapter identity changed"),"scoped ownership missing");
             Console.WriteLine("PASS transaction faults, recovery order, exact adapter ownership");

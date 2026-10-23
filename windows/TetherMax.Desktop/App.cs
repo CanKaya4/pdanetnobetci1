@@ -57,7 +57,7 @@ internal sealed class Dashboard : Window
         panel.Children.Add(new TextBlock{Text="Deneysel akış zamanlama · Sistem geneli yönlendirme ve MyPublicWiFi ağ kurulumu kapalıdır. Oyun gecikmesinde iyileşme henüz ölçülmedi.",Foreground=Brushes.LightGray,TextWrapping=TextWrapping.Wrap,Margin=new Thickness(0,0,0,16)});
         panel.Children.Add(new TextBlock{Text="TANILAMA",Foreground=Brushes.MediumAquamarine,Margin=new Thickness(0,0,0,8)});panel.Children.Add(log);
         Loaded+=async(_,_)=>{await Refresh();timer.Start();};
-        timer.Tick+=async(_,_)=>{if(busy||closing)return;await Refresh();if(engine?.HasExited==true){Note("Motor durdu.");await Disconnect();}if(reconnect.IsChecked==true&&engine==null&&selectedSerial!=null&&devices.Items.Cast<Device>().Any(d=>d.Serial==selectedSerial))await Connect();};
+        timer.Tick+=async(_,_)=>{if(busy||closing)return;await Refresh();if(engine?.HasExited==true){Note("Motor durdu.");await Disconnect();}if(reconnect.IsChecked==true&&engine==null&&systemNetwork==null&&selectedSerial!=null&&devices.Items.Cast<Device>().Any(d=>d.Serial==selectedSerial))await Connect();};
         Closing+=async(_,e)=>{if(closing)return;e.Cancel=true;closing=true;timer.Stop();await Disconnect();Close();};
     }
     sealed record Device(string Serial,string Model) { public override string ToString()=>Model+" · "+Serial; }
@@ -95,7 +95,7 @@ internal sealed class Dashboard : Window
             }
             if(route.GetProperty("error").ValueKind==JsonValueKind.String)Note("Windows rota seçimi · "+target+": "+route.GetProperty("error").GetString());
         }
-        Note("Aktarım oturumu: "+(engine!=null&&!engine.HasExited?"TetherMax localhost SOCKS; yalnızca proxy kullanan uygulamalar":"TetherMax motoru kapalı")+". Sistem geneli ve hotspot kapalı çalışma doğrulanmadı.");
+        Note("Aktarım oturumu: "+(systemNetwork?.Active==true?"TetherMax Wintun IPv4; WFP dış IPv6 engeli etkin olarak raporlandı":engine!=null&&!engine.HasExited?"TetherMax localhost SOCKS; yalnızca proxy kullanan uygulamalar":"TetherMax motoru kapalı")+". Operatör muhasebesi ve hotspot kapalı çalışma ayrı ölçülmelidir.");
         string folder=Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),"TetherMax","reports");
         Directory.CreateDirectory(folder);
         string path=Path.Combine(folder,"network-"+DateTime.UtcNow.ToString("yyyyMMdd-HHmmss-fffffff")+".json");
@@ -191,12 +191,16 @@ internal sealed class Dashboard : Window
     async Task ConnectSystemNetwork()
     {
         if(busy||systemNetwork!=null)return;
-        if(engine==null||selectedSerial==null||pairForward==null||dataForward==null){Note("Önce yetkili USB eşleştirmesini kurun.");return;}
-        if(MessageBox.Show(this,"Bu ayrı fiziksel geçiş testidir. 120 saniyeye kadar tüm IPv4 çıkışı TetherMax Wintun'a yönlendirilecek; dış IPv6 ve diğer adaptör çıkışları WFP ile engellenecek. TetherMax'e özel IP, iki /1 rota ve geçici DNS kuralı eklenecek. Ethernet 5 kapatılmaz. Bağlantı başarısızsa mevcut internetiniz ve bu sohbet geçici kesilebilir. Ayrı kurtarma süreci ayarları geri alır.\n\nMobil trafik arka plandaki uygulamalardan da gelebilir; bu test kota ölçüm testi değildir ve veri bütçesi uygulamaz. Operatör veri deneyi ayrıca onaylanmalıdır.\n\nBu somut ağ değişikliklerine şimdi izin veriyor musunuz?","Ayrı sistem geneli ağ onayı",MessageBoxButton.YesNo,MessageBoxImage.Warning)!=MessageBoxResult.Yes)return;
+        if(MessageBox.Show(this,"Bu ayrı fiziksel geçiş testidir. En fazla 120 saniye ve toplam 1 MiB relay payload bütçesiyle tüm IPv4 çıkışı TetherMax Wintun'a yönlendirilecek; dış IPv6 ve diğer adaptör çıkışları WFP ile engellenecek. Protokol ek yükleri, yeniden iletim ve Android isim çözümü bu payload sayacına dahil değildir; operatör faturası için kesin üst sınır değildir. TetherMax'e özel IP, iki /1 rota ve geçici DNS kuralı eklenecek. Ethernet 5 kapatılmaz. Bağlantı başarısızsa mevcut internetiniz ve bu sohbet geçici kesilebilir. Ayrı kurtarma süreci ayarları geri alır.\n\nArka plan uygulamaları da bütçeyi kullanabilir. Operatör karşılaştırma deneyi ayrıca onaylanmalıdır.\n\nBu somut ağ değişikliklerine ve belirtilen veri bütçesine şimdi izin veriyor musunuz?","Ayrı sistem geneli ağ onayı",MessageBoxButton.YesNo,MessageBoxImage.Warning)!=MessageBoxResult.Yes)return;
+        if(engine==null)await Connect();
+        if(engine==null||selectedSerial==null||pairForward==null||dataForward==null){Note("USB eşleştirmesi kurulamadı; sistem ağı değiştirilmedi.");return;}
         busy=true;
         try {
             using var timeout=new CancellationTokenSource(TimeSpan.FromSeconds(45));
             string secret=await Pairing.Connect(int.Parse(pairForward[4..]),selectedSerial,code=>Dispatcher.InvokeAsync(()=>MessageBox.Show(this,"Telefondaki numara aynı mı?\n"+code,"Güvenli eşleştirme",MessageBoxButton.YesNo)==MessageBoxResult.Yes).Task,timeout.Token);
+            // Preserve the selected ADB forwards but stop the unbudgeted SOCKS
+            // worker/adaptive probes before starting the bounded global test.
+            if(engine!=null){if(!engine.HasExited){engine.Kill();await engine.WaitForExitAsync();}engine.Dispose();engine=null;}
             systemNetwork=new SystemNetwork();
             await systemNetwork.Start(root,"127.0.0.1:"+dataForward[4..],secret,message=>Dispatcher.BeginInvoke(()=>{Note(message);if(message.Contains("\"network-active\""))state.Text="Sistem geneli IPv4 · USB · IPv6 engelli";if(message.Contains("\"network-stopped\""))state.Text="Sistem geneli test durdu · kurtarma kaydını kontrol edin";}));secret="";
             Note("Yönetici ağ yardımcısı başlatıldı; aktif veri yolu onayı bekleniyor. Test 120 saniyede geri alınır.");

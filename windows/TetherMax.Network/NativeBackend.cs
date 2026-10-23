@@ -19,7 +19,7 @@ public sealed class NativeBackend:IBackend
             (applying?"if(Test-Path -LiteralPath '"+complete+"'){throw 'Session already recovered'};":"")+commands+"}finally{$lock.Dispose()}";
         PowerShell(script);
     }
-    public static string Adapter(Plan p)=>"$a=@(Get-NetAdapter -IncludeHidden | Where-Object { $_.InterfaceGuid -eq [guid]'"+p.AdapterGuid+"' }); "+
+    public static string Adapter(Plan p)=>"$a=@(Get-NetAdapter -IncludeHidden | Where-Object { [guid]$_.InterfaceGuid -eq [guid]'"+p.AdapterGuid+"' }); "+
         "if($a.Count -gt 1){throw 'Ambiguous adapter'}; if($a.Count -eq 1 -and $a[0].Name -ne '"+p.AdapterName+"'){throw 'Adapter identity changed'}; ";
     public static string ConfigureScript(Plan p)
     {

@@ -25,7 +25,7 @@ public static class Program
             Admin();return await Connect(args[1]);
         }catch(Exception e){Console.Error.WriteLine(e.Message);return 1;}
     }
-    sealed record Request(string Transport,string Token,int MaxSeconds);
+    sealed record Request(string Transport,string Token,int MaxSeconds,long MaxPayloadBytes);
     static async Task<int> Connect(string pipeName)
     {
         using var single=new Mutex(false,"Global\\TetherMax-Network-Session-v1");
@@ -44,7 +44,7 @@ public static class Program
         string line=await reader.ReadLineAsync(inputTimeout.Token)??throw new IOException("Private request missing");
         if(line.Length>4096)throw new IOException("Private request too large");
         var request=JsonSerializer.Deserialize<Request>(line)??throw new IOException("Invalid private request");line="";
-        if(!Regex.IsMatch(request.Transport,"^127\\.0\\.0\\.1:[0-9]{1,5}$")||!Regex.IsMatch(request.Token,"^[a-f0-9]{32}$")||request.MaxSeconds<0||request.MaxSeconds>300)
+        if(!Regex.IsMatch(request.Transport,"^127\\.0\\.0\\.1:[0-9]{1,5}$")||!Regex.IsMatch(request.Token,"^[a-f0-9]{32}$")||request.MaxSeconds<0||request.MaxSeconds>300||request.MaxPayloadBytes<0||request.MaxPayloadBytes>10*1024*1024||(request.MaxSeconds>0&&request.MaxPayloadBytes==0))
             throw new IOException("Invalid private transport or bounded test duration");
         // Refuse a new activation while earlier durable intents need recovery.
         foreach(string folder in Directory.EnumerateDirectories(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData),"TetherMax-Network-*"))
@@ -52,7 +52,7 @@ public static class Program
         Guid id=Guid.NewGuid();var journal=Journal.Create(id);
         string engine=Path.Combine(AppContext.BaseDirectory,"tethermax-engine.exe"),dll=Path.Combine(AppContext.BaseDirectory,"wintun.dll");
         var start=new ProcessStartInfo(engine){UseShellExecute=false,CreateNoWindow=true,RedirectStandardInput=true,RedirectStandardOutput=true,RedirectStandardError=true};
-        foreach(string arg in new[]{"ip-worker","--approve-adapter-change","--approve-usb-test","--transport",request.Transport,"--wintun-dll",dll,"--journal",journal.PathFor("adapter.jsonl")})start.ArgumentList.Add(arg);
+        foreach(string arg in new[]{"ip-worker","--approve-adapter-change","--approve-usb-test","--transport",request.Transport,"--payload-budget-bytes",request.MaxPayloadBytes.ToString(System.Globalization.CultureInfo.InvariantCulture),"--wintun-dll",dll,"--journal",journal.PathFor("adapter.jsonl")})start.ArgumentList.Add(arg);
         using var worker=Process.Start(start)??throw new IOException("IP worker did not start");
         var stderr=worker.StandardError.ReadToEndAsync();
         worker.StandardInput.NewLine="\n";await worker.StandardInput.WriteLineAsync(request.Token);await worker.StandardInput.FlushAsync();

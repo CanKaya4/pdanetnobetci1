@@ -47,6 +47,7 @@ func runIP(args []string, framed bool) error {
 	usbApproved := flags.Bool("approve-usb-test", false, "explicit approval for selected USB transport use")
 	transport := flags.String("transport", "127.0.0.1:38473", "existing selected-device USB forward")
 	mtu := flags.Uint("mtu", 1500, "IPv4 link MTU")
+	budget := flags.Int64("payload-budget-bytes", 0, "aggregate relay payload/framing byte cap; 0 unlimited; excludes carrier overhead")
 	dll := flags.String("wintun-dll", "", "absolute path to verified Wintun DLL")
 	journal := flags.String("journal", "", "new ownership journal path (required for native adapter mode)")
 	qos := addTrafficFlags(flags)
@@ -80,19 +81,26 @@ func runIP(args []string, framed bool) error {
 	if *mtu < 576 || *mtu > 65535 {
 		return errors.New("invalid IPv4 MTU")
 	}
+	if *budget < 0 || *budget > 10*1024*1024 {
+		return errors.New("payload budget must be 0..10485760 bytes")
+	}
 	secret, err := readPrivateSecret(os.Stdin)
 	if err != nil {
 		return err
 	}
 	link := bridge.Transport{Address: *transport, Token: secret}
-	e, err := ipengine.New(ipengine.Config{Transport: link, MTU: uint32(*mtu), Traffic: manager, SharedClients: prefixes})
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
+	defer cancel()
+	var flowTransport ipengine.FlowTransport = link
+	if *budget > 0 {
+		flowTransport = ipengine.NewBudgetTransport(link, *budget, cancel)
+	}
+	e, err := ipengine.New(ipengine.Config{Transport: flowTransport, MTU: uint32(*mtu), Traffic: manager, SharedClients: prefixes})
 	secret = ""
 	if err != nil {
 		return err
 	}
 	defer e.Close()
-	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
-	defer cancel()
 	var output io.Writer
 	if *qos.telemetry {
 		output = os.Stdout

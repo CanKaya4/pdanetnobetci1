@@ -15,7 +15,12 @@ class StudyTests(unittest.TestCase):
                 "before": before, "after": {**before, "windowsDownload": 1000, "androidDownload": 1000},
                 "backgroundTrafficQuiet": True, "carrierCountersSettled": True,
                 "carrierBeforeEvidence": "before.png", "carrierAfterEvidence": "settled.png",
-                "standardTetheringOffObserved": True, "pathEvidence": "isolated-ip-relay"}
+                "standardTetheringOffObserved": True, "pathEvidence": "native-wintun",
+                "sampleBytes": 1000, "dataTestApproved": True, "carrierResolutionBytes": {"mobile": 100, "hotspot": 100},
+                "selectedPath": {"adapter": "TetherMax-IP-test", "evidenceFile": "route.json"},
+                "carrierReadings": [{"observedAt": "2026-10-23T20:59:00+03:00", "mobileUsed": 0, "hotspotUsed": 0},
+                                    {"observedAt": "2026-10-23T21:15:00+03:00", "mobileUsed": 0, "hotspotUsed": 0},
+                                    {"observedAt": "2026-10-23T22:00:00+03:00", "mobileUsed": 0, "hotspotUsed": 0}]}
     def test_zero_operator_delta_never_proves_bypass(self):
         result = study.analyze(self.record())
         self.assertFalse(result["operatorClassificationVerified"])
@@ -31,8 +36,20 @@ class StudyTests(unittest.TestCase):
             r = self.record(); r["budgetBytes"] = value
             with self.assertRaises(ValueError):study.analyze(r)
     def test_separate_modes(self):
-        for mode in ("phone", "rndis", "tethermax"):
+        for mode in ("phone", "rndis", "pdanet", "tethermax"):
             r = self.record();r["mode"] = mode
             self.assertEqual(study.analyze(copy.deepcopy(r))["mode"], mode)
+    def test_rounding_and_delayed_updates_remain_inconclusive(self):
+        r = self.record();r["carrierResolutionBytes"]["hotspot"] = 1048576
+        self.assertIn("resolution", " ".join(study.analyze(r)["reasons"]))
+        r = self.record();r["after"]["carrierHotspotUsed"] = 1000;r["carrierReadings"][-1]["hotspotUsed"] = 1000
+        result = study.analyze(r)
+        self.assertIn("still changing", " ".join(result["reasons"]))
+        self.assertEqual(result["observedCarrierUpdateDelaySeconds"], 3540)
+    def test_pdanet_requires_version_and_actual_setting(self):
+        r = self.record();r["mode"] = "pdanet"
+        self.assertEqual(study.analyze(r)["interpretation"], "inconclusive")
+        r.update(pdanetVersion="5.23", hideTetherUsageEnabled=True)
+        self.assertEqual(study.analyze(r)["interpretation"], "observed-counter-delta-only")
 
 if __name__ == "__main__":unittest.main()
