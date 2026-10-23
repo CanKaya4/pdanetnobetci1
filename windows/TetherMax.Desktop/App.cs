@@ -160,7 +160,7 @@ internal sealed class Dashboard : Window
     }
     async Task Connect()
     {
-        if(busy||engine!=null)return;if(devices.SelectedItem is not Device device){Note("Yetkili USB telefonu bulunamadı. Telefonda USB hata ayıklama onayını kontrol edin.");return;}
+        if(busy||engine!=null||systemNetwork!=null)return;if(devices.SelectedItem is not Device device){Note("Yetkili USB telefonu bulunamadı. Telefonda USB hata ayıklama onayını kontrol edin.");return;}
         if(!File.Exists(EnginePath))throw new IOException("Go motoru paket içinde bulunamadı.");
         busy=true;selectedSerial=device.Serial;SavePreferences();session=new CancellationTokenSource(TimeSpan.FromSeconds(100));state.Text="Telefon doğrulanıyor…";
         try{

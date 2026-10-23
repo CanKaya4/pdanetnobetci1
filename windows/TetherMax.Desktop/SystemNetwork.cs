@@ -18,6 +18,7 @@ internal sealed class SystemNetwork: IAsyncDisposable
     readonly CancellationTokenSource stop=new();
     Process? guardian;
     Task? heartbeat,read;
+    int disposed;
     public bool Active {get;private set;}
     public SystemNetwork()
     {
@@ -42,11 +43,12 @@ internal sealed class SystemNetwork: IAsyncDisposable
         if(!GetNamedPipeClientProcessId(pipe.SafePipeHandle,out uint pid)||pid!=guardian.Id)throw new IOException("Ağ yardımcısının IPC kimliği eşleşmiyor.");
         var writer=new StreamWriter(pipe,new UTF8Encoding(false),4096,true){AutoFlush=true,NewLine="\n"};
         await writer.WriteLineAsync(JsonSerializer.Serialize(new{Transport=transport,Token=token,MaxSeconds=maxSeconds,MaxPayloadBytes=1048576L}));token="";
-        heartbeat=Task.Run(async()=>{try{while(!stop.IsCancellationRequested){await writer.WriteLineAsync("heartbeat");await Task.Delay(1000,stop.Token);}}catch{}finally{writer.Dispose();}});
+        heartbeat=Task.Run(async()=>{try{while(!stop.IsCancellationRequested){await writer.WriteLineAsync("heartbeat");await Task.Delay(1000,stop.Token);}}catch{}finally{try{writer.Dispose();}catch{}}});
         read=Task.Run(async()=>{try{using var reader=new StreamReader(pipe,Encoding.UTF8,false,4096,true);while(await reader.ReadLineAsync(stop.Token) is string line){using var doc=JsonDocument.Parse(line);var item=doc.RootElement;string type=item.GetProperty("type").GetString()??"";if(type=="network-active")Active=true;if(type=="network-stopped")Active=false;report(line);}}catch(Exception e){if(!stop.IsCancellationRequested)report("Ağ yardımcısı bağlantısı kapandı: "+e.Message);}finally{Active=false;}});
     }
     public async ValueTask DisposeAsync()
     {
+        if(Interlocked.Exchange(ref disposed,1)!=0)return;
         stop.Cancel();pipe.Dispose();
         if(heartbeat!=null)await heartbeat;if(read!=null)await read;
         // Closing IPC asks the guardian to recover; never forcibly terminate it.

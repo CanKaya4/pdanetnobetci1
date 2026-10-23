@@ -50,6 +50,15 @@ jobs:
           # by this test maps to a loopback-only Java fixture, never a phone.
           dotnet run --project windows/TetherMax.NetworkTests -c Release -- --native-isolated-runner 2>&1 | Tee-Object build/reports/native-network.txt
           if($LASTEXITCODE){throw 'Native isolated tests failed; inspect recovery report'}
+      - name: Preserve disposable VM recovery evidence
+        if: always()
+        shell: pwsh
+        run: |
+          Get-ChildItem -Path "$env:ProgramData/TetherMax-Network-*" -Directory -ErrorAction SilentlyContinue | ForEach-Object {
+            $target=Join-Path 'build/reports' $_.Name
+            New-Item -ItemType Directory -Force $target | Out-Null
+            Get-ChildItem -LiteralPath $_.FullName -File | Where-Object {$_.Extension -in '.json','.jsonl','.log','.txt'} | ForEach-Object {Copy-Item -LiteralPath $_.FullName -Destination $target}
+          }
       - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
         if: always()
         with:

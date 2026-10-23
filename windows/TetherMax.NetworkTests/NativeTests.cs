@@ -36,7 +36,7 @@ static class NativeTests
         var errors=helper.StandardError.ReadToEndAsync();
         using var stop=new CancellationTokenSource(TimeSpan.FromSeconds(150));
         await pipe.WaitForConnectionAsync(stop.Token);
-        using var writer=new StreamWriter(pipe,new UTF8Encoding(false),4096,true){AutoFlush=true,NewLine="\n"};
+        var writer=new StreamWriter(pipe,new UTF8Encoding(false),4096,true){AutoFlush=true,NewLine="\n"};
         using var reader=new StreamReader(pipe,Encoding.UTF8,false,4096,true);
         await writer.WriteLineAsync(JsonSerializer.Serialize(new{Transport=transport,Token=token,MaxSeconds=120,MaxPayloadBytes=1048576L}));token="";
         var pulse=Task.Run(async()=>{try{while(!stop.IsCancellationRequested){await writer.WriteLineAsync("heartbeat");await Task.Delay(500,stop.Token);}}catch{}});
@@ -44,10 +44,10 @@ static class NativeTests
             while(await reader.ReadLineAsync(stop.Token) is string line) {
                 using var message=JsonDocument.Parse(line);string? type=message.RootElement.GetProperty("type").GetString();
                 if(type=="network-active"){Console.WriteLine(message.RootElement.GetProperty("session").GetString());Console.Out.Flush();}
-                if(type=="network-error")throw new Exception(line);
+                if(type=="network-error"){Console.Error.WriteLine(line);throw new Exception(line);}
                 if(type=="network-stopped")break;
             }
-        }finally{stop.Cancel();pipe.Dispose();await pulse;}
+        }finally{stop.Cancel();await pulse;try{writer.Dispose();}catch{}}
         await helper.WaitForExitAsync();
         if(helper.ExitCode!=0)throw new Exception("Production guardian failed: "+await errors);
         return 0;

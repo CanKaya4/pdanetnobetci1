@@ -144,7 +144,9 @@ func runIP(args []string, framed bool) error {
 		return err
 	}
 	json.NewEncoder(os.Stdout).Encode(identity)
+	countersDone := make(chan struct{})
 	go func() {
+		defer close(countersDone)
 		ticker := time.NewTicker(time.Second)
 		defer ticker.Stop()
 		for {
@@ -155,6 +157,12 @@ func runIP(args []string, framed bool) error {
 				json.NewEncoder(os.Stdout).Encode(map[string]any{"type": "ip-counters", "counters": e.Counters()})
 			}
 		}
+	}()
+	defer func() {
+		cancel()
+		<-countersDone
+		e.Close()
+		json.NewEncoder(os.Stdout).Encode(map[string]any{"type": "ip-counters-final", "counters": e.Counters()})
 	}()
 	watchDone := make(chan struct{})
 	go func() {

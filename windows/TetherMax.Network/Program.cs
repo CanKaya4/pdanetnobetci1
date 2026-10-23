@@ -51,7 +51,7 @@ public static class Program
         using var lifetime=new CancellationTokenSource();
         await pipe.ConnectAsync(15000,lifetime.Token);
         using var reader=new StreamReader(pipe,Encoding.UTF8,false,4096,true);
-        using var writer=new StreamWriter(pipe,new UTF8Encoding(false),4096,true){AutoFlush=true,NewLine="\n"};
+        var writer=new StreamWriter(pipe,new UTF8Encoding(false),4096,true){AutoFlush=true,NewLine="\n"};
         using var inputTimeout=new CancellationTokenSource(TimeSpan.FromSeconds(15));
         string line=await reader.ReadLineAsync(inputTimeout.Token)??throw new IOException("Private request missing");
         if(line.Length>4096)throw new IOException("Private request too large");
@@ -96,7 +96,8 @@ public static class Program
                 while(!File.Exists(journal.PathFor("watcher-ready"))) {if(watcher.HasExited||limit.Elapsed>TimeSpan.FromSeconds(10))throw new IOException("No independent recovery acknowledgement");Thread.Sleep(50);}
                 if(File.ReadAllText(journal.PathFor("watcher-ready"))!=watcher.Id.ToString())throw new IOException("Recovery acknowledgement mismatch");
             });
-            telemetry=Task.Run(async()=>{try{while(await worker.StandardOutput.ReadLineAsync(lifetime.Token) is string data){using var item=JsonDocument.Parse(data);await Send(new{type="ip-counters",payload=item.RootElement.Clone()});}}catch{lifetime.Cancel();}});
+            journal.WriteNew("measurement.json",JsonSerializer.Serialize(new{startedAt=DateTimeOffset.UtcNow,request.MaxPayloadBytes,MaxSeconds=maxSeconds,adapter=name,guid,operatorAccounting="not-measured",standardAndroidTethering="not-observed"}));
+            telemetry=Task.Run(async()=>{try{using var log=new StreamWriter(new FileStream(journal.PathFor("host-counters.jsonl"),FileMode.CreateNew,FileAccess.Write,FileShare.Read)){AutoFlush=true};while(await worker.StandardOutput.ReadLineAsync() is string data){using var item=JsonDocument.Parse(data);await log.WriteLineAsync(JsonSerializer.Serialize(new{observedAt=DateTimeOffset.UtcNow,payload=item.RootElement.Clone()}));try{await Send(new{type="ip-counters",payload=item.RootElement.Clone()});}catch{}}}catch{lifetime.Cancel();}});
             await Send(new{type="network-active",adapter=name,guid,session=journal.Folder,scope="system-wide IPv4; non-loopback IPv6 blocked; not carrier certification"});
             Task heartbeat=Task.Run(async()=>{try{while(!lifetime.IsCancellationRequested){using var timeout=CancellationTokenSource.CreateLinkedTokenSource(lifetime.Token);timeout.CancelAfter(TimeSpan.FromSeconds(5));string? command=await reader.ReadLineAsync(timeout.Token);if(command!="heartbeat")break;}}catch{}finally{lifetime.Cancel();}});
             var uptime=Stopwatch.StartNew();
@@ -109,7 +110,7 @@ public static class Program
             // worker already died, recovery still removes NRPT and persistent WFP.
             bool recovered=false;
             if(plan!=null) {
-                try {Watchdog.Recover(journal,plan,new NativeBackend(journal));recovered=true;}
+                try {Watchdog.Recover(journal,plan,new NativeBackend(journal),()=>{try{worker.StandardInput.Close();}catch{}if(!worker.WaitForExit(7000))ProcessIdentity.Stop(plan.WorkerPid,plan.WorkerStart);});recovered=true;}
                 catch(Exception e){try{await Send(new{type="recovery-pending",session=journal.Folder,message=e.Message});}catch{}}
             } else {try{if(!worker.HasExited){worker.Kill();await worker.WaitForExitAsync();}recovered=true;}catch{}}
             lifetime.Cancel();try{worker.StandardInput.Close();}catch{}
@@ -117,6 +118,7 @@ public static class Program
             try{await Send(new{type="network-stopped",recovered,session=journal.Folder});}catch{}
             // Never kill the watcher on failed recovery.
             watcher?.Dispose();
+            try{writer.Dispose();}catch{}
         }
         return journal.Completed?0:1;
     }
