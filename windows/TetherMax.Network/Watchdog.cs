@@ -13,6 +13,7 @@ public static class Watchdog
     public static async Task<int> Run(Journal journal,Plan p,IBackend backend,TimeSpan? stall=null,Action? stop=null)
     {
         p.Validate();
+        using(var self=Process.GetCurrentProcess())journal.WriteNew("watcher-process.json",System.Text.Json.JsonSerializer.Serialize(new{pid=self.Id,start=self.StartTime.ToUniversalTime().Ticks}));
         journal.WriteNew("watcher-ready",Environment.ProcessId.ToString());
         DateTime lastWrite=File.GetLastWriteTimeUtc(journal.PathFor("heartbeat"));
         var age=Stopwatch.StartNew();

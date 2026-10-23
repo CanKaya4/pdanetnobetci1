@@ -97,7 +97,7 @@ public sealed class Journal
 public static class ProcessIdentity
 {
     public static bool Alive(int pid,long ticks)
-    {try{using var p=Process.GetProcessById(pid);return !p.HasExited&&p.StartTime.ToUniversalTime().Ticks==ticks;}catch(ArgumentException){return false;}catch(InvalidOperationException){return false;}}
+    {try{using var p=Process.GetProcessById(pid);return !p.HasExited&&p.StartTime.ToUniversalTime().Ticks==ticks;}catch(ArgumentException){return false;}catch(InvalidOperationException){return false;}catch(System.ComponentModel.Win32Exception){return false;}}
     public static void Stop(int pid,long ticks)
     {
         if(!Alive(pid,ticks))return;

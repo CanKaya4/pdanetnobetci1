@@ -62,6 +62,7 @@ public static class Program
         foreach(string folder in Directory.EnumerateDirectories(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData),"TetherMax-Network-*"))
             if(File.Exists(Path.Combine(folder,"intent.json"))&&!File.Exists(Path.Combine(folder,"complete")))throw new IOException("Unrecovered prior network session: "+folder);
         Guid id=Guid.NewGuid();var journal=Journal.Create(id);
+        using(var controller=Process.GetCurrentProcess())journal.WriteNew("controller-process.json",JsonSerializer.Serialize(new{pid=controller.Id,start=controller.StartTime.ToUniversalTime().Ticks}));
         string engine=Path.Combine(AppContext.BaseDirectory,"tethermax-engine.exe"),dll=Path.Combine(AppContext.BaseDirectory,"wintun.dll");
         string bearer=request.Token;
         journal.WriteNew("android-before.json",await CellularStatus(engine,request.Transport,bearer));
@@ -89,9 +90,11 @@ public static class Program
             // the GUI/guardian/worker crashes. Durable WFP state also survives it.
             using(var mutation=journal.Lock())
             Transaction.Apply(plan,backend,()=>journal.Intent(plan),()=>{
-                var watchStart=new ProcessStartInfo(Environment.ProcessPath!){UseShellExecute=false,CreateNoWindow=true};
+                var watchStart=new ProcessStartInfo(Environment.ProcessPath!){UseShellExecute=false,CreateNoWindow=true,RedirectStandardInput=true,RedirectStandardOutput=true,RedirectStandardError=true};
                 watchStart.ArgumentList.Add("watch");watchStart.ArgumentList.Add(journal.Folder);
                 watcher=Process.Start(watchStart)??throw new IOException("Recovery watcher failed to start");
+                watcher.StandardInput.Close();
+                _=watcher.StandardOutput.ReadToEndAsync();_=watcher.StandardError.ReadToEndAsync();
                 var limit=Stopwatch.StartNew();
                 while(!File.Exists(journal.PathFor("watcher-ready"))) {if(watcher.HasExited||limit.Elapsed>TimeSpan.FromSeconds(10))throw new IOException("No independent recovery acknowledgement");Thread.Sleep(50);}
                 if(File.ReadAllText(journal.PathFor("watcher-ready"))!=watcher.Id.ToString())throw new IOException("Recovery acknowledgement mismatch");

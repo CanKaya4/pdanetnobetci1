@@ -30,14 +30,18 @@ static class NativeTests
         Admission();var lifetime=Stopwatch.StartNew();string done=Path.Combine(Workspace,"build","reports","native-rescue-finished");
         while(lifetime.Elapsed<TimeSpan.FromMinutes(15)&&!File.Exists(done)) {
             foreach(string folder in Directory.EnumerateDirectories(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData),"TetherMax-Network-*")) {
-                if(!File.Exists(Path.Combine(folder,"intent.json"))||File.Exists(Path.Combine(folder,"complete")))continue;
-                if(DateTime.UtcNow-File.GetLastWriteTimeUtc(Path.Combine(folder,"intent.json"))<TimeSpan.FromSeconds(90))continue;
+                if(File.Exists(Path.Combine(folder,"complete")))continue;
+                string stamp=File.Exists(Path.Combine(folder,"intent.json"))?"intent.json":"controller-process.json";
+                if(!File.Exists(Path.Combine(folder,stamp))||DateTime.UtcNow-File.GetLastWriteTimeUtc(Path.Combine(folder,stamp))<TimeSpan.FromSeconds(90))continue;
                 // Disposable-VM emergency ONLY: restore runner control-plane
                 // access so a failed fail-closed test can publish diagnostics.
                 // This mode is never packaged into the product or counted PASS.
                 string log=Path.Combine(Workspace,"build","reports","native-rescue.log");
                 try {
-                    var j=new Journal(folder);var p=j.Read();File.AppendAllText(log,"Emergency VM recovery required: "+folder+Environment.NewLine);
+                    var j=new Journal(folder);File.AppendAllText(log,"Emergency VM recovery required: "+folder+Environment.NewLine);
+                    foreach(string processFile in new[]{"watcher-process.json","controller-process.json"})if(File.Exists(j.PathFor(processFile))){using var identity=JsonDocument.Parse(File.ReadAllText(j.PathFor(processFile)));ProcessIdentity.Stop(identity.RootElement.GetProperty("pid").GetInt32(),identity.RootElement.GetProperty("start").GetInt64());}
+                    if(!File.Exists(j.PathFor("intent.json")))continue;
+                    var p=j.Read();
                     ProcessIdentity.Stop(p.WorkerPid,p.WorkerStart);ProcessIdentity.Stop(p.GuardianPid,p.GuardianStart);
                     await Task.Delay(1000);
                     try{new NativeBackend(j).RemoveConfiguration(p);}catch(Exception e){File.AppendAllText(log,e+Environment.NewLine);}
@@ -72,7 +76,7 @@ static class NativeTests
             }
         }finally{stop.Cancel();await pulse;try{writer.Dispose();}catch{}}
         await helper.WaitForExitAsync();
-        if(helper.ExitCode!=0)throw new Exception("Production guardian failed: "+await errors);
+        if(helper.ExitCode!=0)throw new Exception("Production guardian failed: "+await errors.WaitAsync(TimeSpan.FromSeconds(3)));
         return 0;
     }
     static async Task<byte[]> DnsReply(byte[] q)
@@ -126,7 +130,7 @@ static class NativeTests
                 using var owner=Start(testsExe,"--native-owner");var ownerErrors=owner.StandardError.ReadToEndAsync();Journal? j=null;Plan? p=null;
                 try {
                     using var startTimeout=new CancellationTokenSource(TimeSpan.FromSeconds(90));
-                    string folder=await owner.StandardOutput.ReadLineAsync(startTimeout.Token)??throw new Exception("Native owner failed: "+await ownerErrors);
+                    string folder=await owner.StandardOutput.ReadLineAsync(startTimeout.Token)??throw new Exception("Native owner failed: "+await ownerErrors.WaitAsync(TimeSpan.FromSeconds(3)));
                     j=new Journal(folder);p=j.Read();using(var wfp=new Wfp()){Check(wfp.Exists(p.V4Filter)&&wfp.Exists(p.V6Filter),"native persistent WFP filters not installed");}
                     var selected=NativeBackend.PowerShell("(Find-NetRoute -RemoteIPAddress 1.1.1.1 | Select-Object -First 1).InterfaceAlias");Check(selected.Trim()==p.AdapterName,"real Windows route not on Wintun");
                     string fallbackSelected=NativeBackend.PowerShell("(Find-NetRoute -RemoteIPAddress 198.18.0.2 | Select-Object -First 1).InterfaceAlias");Check(fallbackSelected.Trim()==trap.Name,"negative probe must target the owned fallback adapter");
