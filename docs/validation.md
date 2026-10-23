@@ -1,5 +1,10 @@
 # Validation record — engine preview
 
+**Limited Wintun test:** see
+[wintun-validation-2026-10-23.md](wintun-validation-2026-10-23.md) for the actual
+native lifecycle run, original immediate-cleanup EXIT4 and independently verified
+subsequent removal. No full TUN or global network apply was performed.
+
 **Latest local evidence:** the subsequent real Galaxy A56/Windows11 pairing,
 HTTPS/UDP and installer checks are recorded in
 [device-validation-2026-10-23.md](device-validation-2026-10-23.md).

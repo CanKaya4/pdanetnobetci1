@@ -32,18 +32,24 @@ internal static class Program {
   if(!approved||!admin){Console.Error.WriteLine("Explicit approval AND an elevated test process are required. No DLL loaded.");return 2;}
   if(NetworkInterface.GetAllNetworkInterfaces().Any(n=>n.Name==name)){Console.Error.WriteLine("Name collision; nothing changed.");return 3;}
   nint library=0,adapter=0,session=0; Close? close=null;End? end=null;int result=0;
+  bool adapterCreated=false,sessionStarted=false;string? failure=null;
   try {
    library=NativeLibrary.Load(dll);
    T Export<T>(string export)where T:Delegate=>Marshal.GetDelegateForFunctionPointer<T>(NativeLibrary.GetExport(library,export));
    var create=Export<Create>("WintunCreateAdapter");close=Export<Close>("WintunCloseAdapter");var start=Export<Start>("WintunStartSession");end=Export<End>("WintunEndSession");
    adapter=create(name,"TetherMax-Test",ref guid);if(adapter==0)throw new Win32Exception(Marshal.GetLastWin32Error());
+   adapterCreated=true;
    session=start(adapter,0x400000);if(session==0)throw new Win32Exception(Marshal.GetLastWin32Error());
+   sessionStarted=true;
+   // IP Helper reads actual Windows interfaces while the session is active.
+   File.WriteAllText(journal+".active.json",JsonSerializer.Serialize(new{AdapterName=name,AdapterGuid=guid,SessionStarted=sessionStarted,WindowsInterfaces=Snapshot()},new JsonSerializerOptions{WriteIndented=true}));
    Console.WriteLine("Owned test adapter and session created. No IP, route or DNS configuration performed.");
-  }catch(Exception ex){Console.Error.WriteLine(ex.Message);result=1;}
+  }catch(Exception ex){failure=ex.ToString();Console.Error.WriteLine(ex.Message);result=1;}
   finally{
    if(session!=0)end!(session);if(adapter!=0)close!(adapter);if(library!=0)NativeLibrary.Free(library);
-   bool remains=NetworkInterface.GetAllNetworkInterfaces().Any(n=>n.Id.Equals(guid.ToString("B"),StringComparison.OrdinalIgnoreCase)||n.Name==name);
-   File.WriteAllText(journal+".after.json",JsonSerializer.Serialize(new{AdapterStillPresent=remains,After=Snapshot()},new JsonSerializerOptions{WriteIndented=true}));
+   var cleanup=RemovalVerifier.Wait(()=>NetworkInterface.GetAllNetworkInterfaces().Any(n=>n.Id.Equals(guid.ToString("B"),StringComparison.OrdinalIgnoreCase)||n.Name==name));
+   bool remains=cleanup.StillPresent;
+   File.WriteAllText(journal+".after.json",JsonSerializer.Serialize(new{AdapterName=name,AdapterGuid=guid,AdapterCreated=adapterCreated,SessionStarted=sessionStarted,AdapterStillPresent=remains,CleanupInitiallyPending=cleanup.InitiallyPresent,CleanupPolls=cleanup.Polls,Failure=failure,After=Snapshot()},new JsonSerializerOptions{WriteIndented=true}));
    Console.WriteLine("Owned adapter still present: "+remains);if(remains)result=4;
   }
   return result;
