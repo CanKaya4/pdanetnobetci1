@@ -1,5 +1,8 @@
 # USB önceliği teslim kaydı — 23 Ekim 2026
 
+Bu, `52a4abd` tarihsel teslimatıdır. Sonraki native backend teslimatı
+[24 Ekim kaydındadır](native-delivery-2026-10-24.md).
+
 **Ana istek tamamlanmadı.** Bu commit, standart RNDIS'ten bağımsız tam Windows
 internet aktarımı olarak sunulamaz. Native rota/IP/DNS backend'i, çalışan ayrı
 süreçte rollback ve IPv4/IPv6/DNS fail-closed engeli hâlâ eksik. Eklenen rota

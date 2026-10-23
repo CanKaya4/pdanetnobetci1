@@ -1,5 +1,8 @@
 # Hotspot bağımsız USB önceliği — 23 Ekim 2026
 
+Tarihsel 0.4.1 / `52a4abd` durum kaydıdır. 0.5'te eklenen gerçek backend ve
+test sınırları için [native ağ motoruna](native-network.md) bakın.
+
 ## Sonuç
 
 Bu teslimat tam Windows internet bağlantısı değildir. Mevcut motor Windows

@@ -1,5 +1,8 @@
 # Experimental IPv4 engine — 23 October 2026
 
+Historical 0.4 engine record. The 0.5 Windows configuration/guard/recovery
+implementation is described in [native-network.md](native-network.md).
+
 This increment adds a packet-to-flow engine to the existing USB relay. It is not
 system-wide Internet completion. Windows IP assignments, routes, DNS, ICS and
 firewall configuration are not implemented or applied. No native IP adapter was
