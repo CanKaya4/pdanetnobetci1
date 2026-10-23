@@ -15,7 +15,12 @@ public static class ProcessLaunch
         foreach(int kind in new[]{-10,-11,-12}) {
             IntPtr handle=GetStdHandle(kind);
             if(handle!=IntPtr.Zero&&handle!=new IntPtr(-1))
-                if(!SetHandleInformation(handle,1,0))throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error());
+                if(!SetHandleInformation(handle,1,0)) {
+                    int error=Marshal.GetLastWin32Error();
+                    // CREATE_NO_WINDOW children can retain an invalid standard
+                    // input slot when that slot was deliberately not inherited.
+                    if(error!=6)throw new System.ComponentModel.Win32Exception(error);
+                }
         }
     }
 }

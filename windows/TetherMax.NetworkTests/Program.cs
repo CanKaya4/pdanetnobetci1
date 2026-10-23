@@ -54,9 +54,9 @@ class Program
         File.WriteAllText(Path.Combine(folder,"outside-sentinel"),"preserve");
         using var owner=Child("--fixture-owner",folder,mode);
         try {
-            ProcessLaunch.DetachStandardHandleInheritance();
             using var timeout=new CancellationTokenSource(TimeSpan.FromSeconds(10));
-            Require(await owner.StandardOutput.ReadLineAsync(timeout.Token)=="READY","fixture owner did not start");
+            string? ready=await owner.StandardOutput.ReadLineAsync(timeout.Token);
+            if(ready!="READY")throw new Exception("fixture owner did not start: "+await owner.StandardError.ReadToEndAsync().WaitAsync(TimeSpan.FromSeconds(2)));
             var j=new Journal(folder,false);var p=j.Read();
             Require(File.Exists(j.PathFor("owned-guard"))&&File.Exists(j.PathFor("owned-config")),"fixture configuration missing");
             if(mode=="watcher-crash") {int pid=int.Parse(File.ReadAllText(j.PathFor("watcher-ready")));using var watcher=Process.GetProcessById(pid);watcher.Kill();}
@@ -81,6 +81,7 @@ class Program
     static async Task<int> Main(string[] args)
     {
         try {
+            ProcessLaunch.DetachStandardHandleInheritance();
             if(args.Length==2&&args[0]=="--fixture-watch"){var j=new Journal(args[1],false);return await Watchdog.Run(j,j.Read(),new FileBackend(args[1]),TimeSpan.FromSeconds(1),()=>{});}
             if(args.Length==3&&args[0]=="--fixture-owner"){await FixtureOwner(args[1],args[2]);return 0;}
             if(args.SequenceEqual(new[]{"--native-isolated-runner"}))return await NativeTests.Run().WaitAsync(TimeSpan.FromMinutes(4));
