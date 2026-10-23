@@ -16,11 +16,18 @@ import (
 	"time"
 )
 
-type stdioStream struct{ once sync.Once }
+type stdioStream struct {
+	input  io.ReadCloser
+	output io.WriteCloser
+	once   sync.Once
+}
 
-func (*stdioStream) Read(b []byte) (int, error)  { return os.Stdin.Read(b) }
-func (*stdioStream) Write(b []byte) (int, error) { return os.Stdout.Write(b) }
-func (s *stdioStream) Close() error              { s.once.Do(func() { os.Stdin.Close() }); return nil }
+func (s *stdioStream) Read(b []byte) (int, error)  { return s.input.Read(b) }
+func (s *stdioStream) Write(b []byte) (int, error) { return s.output.Write(b) }
+func (s *stdioStream) Close() error {
+	s.once.Do(func() { s.input.Close(); s.output.Close() })
+	return nil
+}
 func readPrivateSecret(r io.Reader) (string, error) {
 	b := make([]byte, 33)
 	if _, err := io.ReadFull(r, b); err != nil {
@@ -73,7 +80,7 @@ func runIP(args []string, framed bool) error {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer cancel()
 	if framed {
-		return e.Run(ctx, &ipengine.FramedDevice{Stream: &stdioStream{}})
+		return e.Run(ctx, &ipengine.FramedDevice{Stream: &stdioStream{input: os.Stdin, output: os.Stdout}})
 	}
 	// Reserve an immutable, previously nonexistent ownership journal before mutation.
 	f, err := os.OpenFile(*journal, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
