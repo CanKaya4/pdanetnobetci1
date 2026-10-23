@@ -132,6 +132,14 @@ class Program
             await Task.Delay(100);Require(!pendingRead.IsCompleted,"sharing lock was not respected");sharingLock.Dispose();
             Require(await pendingRead==completePayload,"sharing violation retry corrupted readiness data");
             Console.WriteLine("PASS Windows sharing lock publication retry");
+            var recoveryBackend=new MemoryBackend{Guarded=true,Configured=true};
+            var recoveryOwner=metadataJournal.Lock();
+            var concurrentRecovery=Task.Run(()=>Watchdog.Recover(metadataJournal,p,recoveryBackend,()=>{}));
+            await Task.Delay(100);Require(!concurrentRecovery.IsCompleted,"concurrent recovery must wait for active owner");recoveryOwner.Dispose();
+            await concurrentRecovery.WaitAsync(TimeSpan.FromSeconds(5));
+            Require(metadataJournal.Completed&&!recoveryBackend.Guarded&&!recoveryBackend.Configured,"concurrent recovery did not finish safely");
+            Watchdog.Recover(metadataJournal,p,recoveryBackend,()=>throw new Exception("completed recovery repeated"));
+            Console.WriteLine("PASS concurrent recovery waits for ownership and completed recovery is idempotent");
             foreach(string mode in new[]{"owner-crash","stall","watcher-crash","retry","os-executor"})await FixtureProcessTest(mode);
             Console.WriteLine("All offline network checks passed; no OS networking or physical USB used.");return 0;
         }catch(Exception e){Console.Error.WriteLine(e);return 1;}

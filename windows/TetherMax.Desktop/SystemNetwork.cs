@@ -31,7 +31,7 @@ internal sealed class SystemNetwork: IAsyncDisposable
         pipe=NamedPipeServerStreamAcl.Create(name,PipeDirection.InOut,1,PipeTransmissionMode.Byte,PipeOptions.Asynchronous,4096,4096,acl);
     }
     string Name {get;}
-    public async Task Start(string folder,string transport,string token,Action<string> report,int maxSeconds=120)
+    public async Task Start(string folder,string transport,string token,Action<string> report,int maxSeconds=120,TrafficSettings? settings=null)
     {
         string helper=Path.Combine(folder,"TetherMax.Network.exe");
         if(!File.Exists(helper)||!File.Exists(Path.Combine(folder,"wintun.dll")))throw new IOException("Native ağ yardımcısı veya doğrulanmış Wintun pakette yok.");
@@ -42,7 +42,7 @@ internal sealed class SystemNetwork: IAsyncDisposable
         await pipe.WaitForConnectionAsync(timeout.Token);
         if(!GetNamedPipeClientProcessId(pipe.SafePipeHandle,out uint pid)||pid!=guardian.Id)throw new IOException("Ağ yardımcısının IPC kimliği eşleşmiyor.");
         var writer=new StreamWriter(pipe,new UTF8Encoding(false),4096,true){AutoFlush=true,NewLine="\n"};
-        await writer.WriteLineAsync(JsonSerializer.Serialize(new{Transport=transport,Token=token,MaxSeconds=maxSeconds,MaxPayloadBytes=1048576L}));token="";
+        await writer.WriteLineAsync(JsonSerializer.Serialize(new{Transport=transport,Token=token,MaxSeconds=maxSeconds,MaxPayloadBytes=maxSeconds==0?0L:1048576L,Profile=settings?.Mode??"auto",UploadMbps=settings?.UploadMbps??0,DownloadMbps=settings?.DownloadMbps??0,Adaptive=settings?.Adaptive??false}));token="";
         heartbeat=Task.Run(async()=>{try{while(!stop.IsCancellationRequested){await writer.WriteLineAsync("heartbeat");await Task.Delay(1000,stop.Token);}}catch{}finally{try{writer.Dispose();}catch{}}});
         read=Task.Run(async()=>{try{using var reader=new StreamReader(pipe,Encoding.UTF8,false,4096,true);while(await reader.ReadLineAsync(stop.Token) is string line){using var doc=JsonDocument.Parse(line);var item=doc.RootElement;string type=item.GetProperty("type").GetString()??"";if(type=="network-active")Active=true;if(type=="network-stopped")Active=false;report(line);}}catch(Exception e){if(!stop.IsCancellationRequested)report("Ağ yardımcısı bağlantısı kapandı: "+e.Message);}finally{Active=false;}});
     }

@@ -25,6 +25,19 @@ internal sealed class Dashboard : Window
     Process? engine; CancellationTokenSource? session; bool busy, closing, refreshing; string? selectedSerial; string? pairForward, dataForward;
     int socksPort=1088;
     SystemNetwork? systemNetwork;
+    bool wantsDaily;
+    DateTime nextReconnect=DateTime.MinValue;
+    System.Windows.Forms.NotifyIcon? tray;
+    bool DailyReady {
+        get { try {
+            string folder=Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),"TetherMax","reports");
+            if(!Directory.Exists(folder))return false;
+            foreach(string path in Directory.EnumerateFiles(folder,"native-*.json").OrderDescending().Take(20)) {
+                using var doc=JsonDocument.Parse(File.ReadAllText(path));var r=doc.RootElement;
+                if(r.TryGetProperty("recovered",out var recovered)&&recovered.ValueKind==JsonValueKind.True&&r.TryGetProperty("windowsConnectivity",out var checks)&&checks.ValueKind==JsonValueKind.Object&&checks.GetProperty("checks").GetArrayLength()==3&&checks.GetProperty("checks").EnumerateArray().All(c=>c.GetProperty("passed").GetBoolean()))return true;
+            }
+        }catch{}return false; }
+    }
     readonly DispatcherTimer timer = new() { Interval=TimeSpan.FromSeconds(5) };
     readonly string adb = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),"Android","Sdk","platform-tools","adb.exe");
     readonly string root = AppContext.BaseDirectory;
@@ -36,28 +49,49 @@ internal sealed class Dashboard : Window
         Background=new SolidColorBrush(Color.FromRgb(16,24,39));
         var panel=new StackPanel { Margin=new Thickness(32) }; Content=new ScrollViewer { Content=panel };
         panel.Children.Add(new TextBlock{Text="TetherMax",FontSize=36,FontWeight=FontWeights.Bold,Foreground=Brushes.White});
-        panel.Children.Add(new TextBlock{Text="USB motoru · Güvenli eşleştirme önizlemesi",Foreground=Brushes.MediumAquamarine,Margin=new Thickness(0,4,0,12)});
+        panel.Children.Add(new TextBlock{Text="USB üzerinden sistem geneli internet · Güvenli eşleştirme",Foreground=Brushes.MediumAquamarine,Margin=new Thickness(0,4,0,12)});
         panel.Children.Add(state); panel.Children.Add(devices);
         var actions=new WrapPanel();panel.Children.Add(actions);
         Button(actions,"Telefonları yenile",async()=>await Refresh());
-        Button(actions,"Bağlan",async()=>await Connect()); Button(actions,"Bağlantıyı kes",async()=>{reconnect.IsChecked=false;await Disconnect();});
+        Button(actions,"Bağlan",async()=>await ConnectSystemNetwork(false)); Button(actions,"Bağlantıyı kes",async()=>{reconnect.IsChecked=false;await Disconnect();});
         Button(actions,"İnternet testi",async()=>await Diagnose());
         Button(actions,"IP motoru testi",async()=>await DiagnoseIP());
         Button(actions,"Windows ağ yolu raporu",async()=>await AuditNetwork());
+        Button(actions,"Kurtar / teşhis",async()=>{
+            await Disconnect();
+            var launch=new ProcessStartInfo(Path.Combine(root,"TetherMax.Network.exe")){UseShellExecute=true,Verb="runas",WindowStyle=ProcessWindowStyle.Hidden};
+            launch.ArgumentList.Add("recover-stale");launch.ArgumentList.Add("--approve-network-recovery");
+            using var recovery=Process.Start(launch)??throw new IOException("Kurtarma yardımcısı başlatılamadı");
+            await recovery.WaitForExitAsync();Note(recovery.ExitCode==0?"Kalmış TetherMax oturumları temizlendi. Mevcut bağlantıyı ağ yolu raporuyla kontrol edebilirsiniz.":"Kurtarma tamamlanamadı. Telefon USB tethering ayarını değiştirmeyin; ağ raporunu kontrol edin.");
+        });
         Button(actions,"Sistem geneli USB testi",async()=>await ConnectSystemNetwork());
         Button(actions,"Eşleştirmeyi unut",async()=>{await Disconnect();if(devices.SelectedItem is Device d){Pairing.Forget(d.Serial);Note("Windows eşleştirmesi silindi. Telefonda da Güvenilen bilgisayarları unut seçeneğini kullanın.");}});
         panel.Children.Add(reconnect);
+        var startup=new CheckBox{Content="Windows açılışında TetherMax’i aç",Foreground=Brushes.White,Margin=new Thickness(0,4,0,12)};
+        using(var key=Microsoft.Win32.Registry.CurrentUser.OpenSubKey(@"Software\Microsoft\Windows\CurrentVersion\Run"))startup.IsChecked=key?.GetValue("TetherMax") is string;
+        startup.Checked+=(_,_)=>{using var key=Microsoft.Win32.Registry.CurrentUser.CreateSubKey(@"Software\Microsoft\Windows\CurrentVersion\Run");key.SetValue("TetherMax","\""+Environment.ProcessPath+"\"");};
+        startup.Unchecked+=(_,_)=>{using var key=Microsoft.Win32.Registry.CurrentUser.OpenSubKey(@"Software\Microsoft\Windows\CurrentVersion\Run",true);key?.DeleteValue("TetherMax",false);};
+        panel.Children.Add(startup);
+        var help=new TextBlock{Foreground=Brushes.LightGray,TextWrapping=TextWrapping.Wrap,Text="Telefon: TetherMax → Hücresel motoru başlat. Windows: Bağlan → UAC onayı. Simge durumuna küçültünce sistem tepsisinde çalışır. Mevcut tek interneti sağlayan USB tethering’i güvenli alternatif olmadan kapatmayın. Kota bağımsızlığı doğrulanmadı."};panel.Children.Add(help);
+        var trayMenu=new System.Windows.Forms.ContextMenuStrip();
+        trayMenu.Items.Add("Göster",null,(_,_)=>Dispatcher.Invoke(()=>{Show();WindowState=WindowState.Normal;Activate();}));
+        trayMenu.Items.Add("Bağlan",null,(_,_)=>Dispatcher.BeginInvoke(async()=>{try{await ConnectSystemNetwork(false);}catch(Exception e){Note(e.Message);}}));
+        trayMenu.Items.Add("Bağlantıyı kes",null,(_,_)=>Dispatcher.BeginInvoke(async()=>{reconnect.IsChecked=false;await Disconnect();}));
+        trayMenu.Items.Add("Çıkış",null,(_,_)=>Dispatcher.Invoke(()=>Close()));
+        tray=new System.Windows.Forms.NotifyIcon{Text="TetherMax USB internet",Icon=System.Drawing.SystemIcons.Application,Visible=true,ContextMenuStrip=trayMenu};
+        tray.DoubleClick+=(_,_)=>Dispatcher.Invoke(()=>{Show();WindowState=WindowState.Normal;Activate();});
+        StateChanged+=(_,_)=>{if(WindowState==WindowState.Minimized)Hide();};Closed+=(_,_)=>tray.Dispose();
         try {
             if(File.Exists(SettingsPath)) { var saved=System.Text.Json.JsonSerializer.Deserialize<Preferences>(File.ReadAllText(SettingsPath));selectedSerial=saved?.Serial;reconnect.IsChecked=saved?.Reconnect==true;trafficPanel.Load(saved?.Traffic??new()); }
         } catch { Note("Tercihler okunamadı; otomatik bağlantı kapalı tutuldu."); }
         reconnect.Checked+=(_,_)=>SavePreferences();reconnect.Unchecked+=(_,_)=>SavePreferences();
-        panel.Children.Add(new TextBlock{Text="Yalnızca localhost SOCKS · Windows varsayılan interneti değiştirilmez",Foreground=Brushes.LightGray,TextWrapping=TextWrapping.Wrap,Margin=new Thickness(0,12,0,20)});
-        trafficPanel.ApplySettings=async settings=>{if(engine!=null&&!engine.HasExited){await engine.StandardInput.WriteLineAsync(JsonSerializer.Serialize(settings));await engine.StandardInput.FlushAsync();}SavePreferences(settings);};
+        panel.Children.Add(new TextBlock{Text="Bağlan: Windows IPv4 internetini USB üzerinden aktarır. IPv6 kaçak koruması etkin. Günlük modda uygulama süre/veri sınırı yoktur.",Foreground=Brushes.LightGray,TextWrapping=TextWrapping.Wrap,Margin=new Thickness(0,12,0,20)});
+        trafficPanel.ApplySettings=async settings=>{if(engine!=null&&!engine.HasExited){await engine.StandardInput.WriteLineAsync(JsonSerializer.Serialize(settings));await engine.StandardInput.FlushAsync();}SavePreferences(settings);if(systemNetwork!=null)Note("Profil kaydedildi. Sistem geneli motor bu ayarı sonraki bağlantıda kullanacak.");};
         panel.Children.Add(trafficPanel);
-        panel.Children.Add(new TextBlock{Text="Deneysel akış zamanlama · Sistem geneli yönlendirme ve MyPublicWiFi ağ kurulumu kapalıdır. Oyun gecikmesinde iyileşme henüz ölçülmedi.",Foreground=Brushes.LightGray,TextWrapping=TextWrapping.Wrap,Margin=new Thickness(0,0,0,16)});
+        panel.Children.Add(new TextBlock{Text="Standart USB tethering kapatma işlemi yalnızca doğrulanmış bağlantı ve güvenli geri dönüşle yapılmalı. Profil değişiklikleri bir sonraki bağlantıda uygulanır. MyPublicWiFi/ICS otomatik yapılandırılmaz.",Foreground=Brushes.LightGray,TextWrapping=TextWrapping.Wrap,Margin=new Thickness(0,0,0,16)});
         panel.Children.Add(new TextBlock{Text="TANILAMA",Foreground=Brushes.MediumAquamarine,Margin=new Thickness(0,0,0,8)});panel.Children.Add(log);
-        Loaded+=async(_,_)=>{await Refresh();timer.Start();};
-        timer.Tick+=async(_,_)=>{if(busy||closing)return;await Refresh();if(engine?.HasExited==true){Note("Motor durdu.");await Disconnect();}if(reconnect.IsChecked==true&&engine==null&&systemNetwork==null&&selectedSerial!=null&&devices.Items.Cast<Device>().Any(d=>d.Serial==selectedSerial))await Connect();};
+        Loaded+=async(_,_)=>{wantsDaily=DailyReady&&reconnect.IsChecked==true;await Refresh();timer.Start();};
+        timer.Tick+=async(_,_)=>{if(busy||closing)return;await Refresh();if(engine?.HasExited==true){Note("Motor durdu.");await Disconnect();}if(wantsDaily&&reconnect.IsChecked==true&&DateTime.UtcNow>=nextReconnect&&engine==null&&systemNetwork==null&&selectedSerial!=null&&devices.Items.Cast<Device>().Any(d=>d.Serial==selectedSerial))await ConnectSystemNetwork(false);};
         Closing+=async(_,e)=>{if(closing)return;e.Cancel=true;closing=true;timer.Stop();await Disconnect();Close();};
     }
     sealed record Device(string Serial,string Model) { public override string ToString()=>Model+" · "+Serial; }
@@ -134,13 +168,13 @@ internal sealed class Dashboard : Window
                 string model=bits.FirstOrDefault(b=>b.StartsWith("model:"))?.Substring(6)??"Android";list.Add(new Device(bits[0],model));
             }
             devices.ItemsSource=list;devices.SelectedItem=list.FirstOrDefault(d=>d.Serial==old)??list.FirstOrDefault();
-            if(engine!=null&&!list.Any(d=>d.Serial==selectedSerial)){await Disconnect();Note("USB cihazı ayrıldı; yalnızca TetherMax bağlantısı kapatıldı.");}
-            if(engine!=null) {
+            if((engine!=null||systemNetwork!=null)&&!list.Any(d=>d.Serial==selectedSerial)){await Disconnect(true);Note("USB cihazı ayrıldı; yalnızca TetherMax bağlantısı kapatıldı.");}
+            if(engine!=null||systemNetwork!=null) {
                 string forwards=await Adb("forward","--list");
                 bool Has(string? endpoint)=>endpoint!=null&&forwards.Split('\n').Any(line=>line.StartsWith(selectedSerial+" ")&&line.Split((char[]?)null,StringSplitOptions.RemoveEmptyEntries).Contains(endpoint));
-                if(!Has(pairForward)||!Has(dataForward)){await Disconnect();Note("TetherMax USB aktarım kanalı kayboldu; yeniden bağlantı bekleniyor.");}
+                if(!Has(pairForward)||!Has(dataForward)){await Disconnect(true);Note("TetherMax USB aktarım kanalı kayboldu; yeniden bağlantı bekleniyor.");}
             }
-            if(engine==null&&!busy){
+            if(engine==null&&systemNetwork==null&&!busy){
                 string next=list.Count>0?"USB telefon hazır · bağlantı kapalı":unauthorized?"Telefon bulundu · ADB izni bekleniyor":"Yetkili USB telefonu bulunamadı";
                 if(unauthorized&&list.Count==0&&state.Text!=next)Note("USB hata ayıklama açık olsa da bu bilgisayarın Android RSA izni gerekiyor. Uygulama izinleri veya USB bağlantısını sıfırlamaz.");
                 state.Text=next;
@@ -158,7 +192,7 @@ internal sealed class Dashboard : Window
             return port;
         } catch { await Adb("-s",serial,"forward","--remove","tcp:"+port);throw; }
     }
-    async Task Connect()
+    async Task ConnectUsb()
     {
         if(busy||engine!=null||systemNetwork!=null)return;if(devices.SelectedItem is not Device device){Note("Yetkili USB telefonu bulunamadı. Telefonda USB hata ayıklama onayını kontrol edin.");return;}
         if(!File.Exists(EnginePath))throw new IOException("Go motoru paket içinde bulunamadı.");
@@ -176,11 +210,12 @@ internal sealed class Dashboard : Window
             _=ReadTelemetry(engine);
             await Task.Delay(250);if(engine.HasExited)throw new IOException("Motor başlatılamadı: "+await engine.StandardError.ReadToEndAsync());
             state.Text="USB eşleşti · SOCKS hazır";Note("127.0.0.1:"+socksPort+" hazır. İnternet testi ile veri yolunu doğrulayın. Sistem geneli yönlendirme kapalı.");
-        }catch(Exception ex){await Disconnect();Note("Bağlantı: "+ex.Message);}
+        }catch(Exception ex){await Disconnect(wantsDaily);Note("Bağlantı: "+ex.Message);}
         finally{busy=false;}
     }
-    async Task Disconnect()
+    async Task Disconnect(bool preserveDaily=false)
     {
+        if(!preserveDaily)wantsDaily=false;
         if(systemNetwork!=null){await systemNetwork.DisposeAsync();systemNetwork=null;}
         session?.Cancel();session?.Dispose();session=null;
         if(engine!=null){try{if(!engine.HasExited){engine.Kill();await engine.WaitForExitAsync();}}catch{}engine.Dispose();engine=null;}
@@ -188,13 +223,22 @@ internal sealed class Dashboard : Window
         pairForward=null;dataForward=null;state.Text="Bağlantı kapalı";
         trafficPanel.Reset();
     }
-    async Task ConnectSystemNetwork()
+    async Task ReleaseStoppedNetwork()
+    {
+        var stopped=systemNetwork;
+        if(stopped==null)return;
+        await stopped.DisposeAsync();
+        if(ReferenceEquals(systemNetwork,stopped))systemNetwork=null;
+    }
+    async Task ConnectSystemNetwork(bool diagnostic=true)
     {
         if(busy||systemNetwork!=null)return;
-        if(MessageBox.Show(this,"Bu ayrı fiziksel geçiş testidir. En fazla 120 saniye ve toplam 1 MiB relay payload bütçesiyle tüm IPv4 çıkışı TetherMax Wintun'a yönlendirilecek; dış IPv6 ve diğer adaptör çıkışları WFP ile engellenecek. Protokol ek yükleri, yeniden iletim ve Android isim çözümü bu payload sayacına dahil değildir; operatör faturası için kesin üst sınır değildir. TetherMax'e özel IP, iki /1 rota ve geçici DNS kuralı eklenecek. Ethernet 5 kapatılmaz. Resmî Wintun sürücüsü yüklenebilir; paylaşılan sürücü paketi test sonunda silinmez. Bağlantı başarısızsa mevcut internetiniz ve bu sohbet geçici kesilebilir. Ayrı kurtarma süreci ayarları geri alır.\n\nArka plan uygulamaları da bütçeyi kullanabilir. Operatör karşılaştırma deneyi ayrıca onaylanmalıdır.\n\nBu somut ağ değişikliklerine ve belirtilen veri bütçesine şimdi izin veriyor musunuz?","Ayrı sistem geneli ağ onayı",MessageBoxButton.YesNo,MessageBoxImage.Warning)!=MessageBoxResult.Yes)return;
-        if(engine==null)await Connect();
+        if(!diagnostic&&!DailyReady){Note("Günlük bağlantı için önce Sistem geneli USB testindeki HTTPS/UDP/DNS ve kurtarma kabulü tamamlanmalı.");return;}
+        if(diagnostic&&MessageBox.Show(this,"Bu ayrı fiziksel geçiş testidir. En fazla 120 saniye ve toplam 1 MiB relay payload bütçesiyle tüm IPv4 çıkışı TetherMax Wintun'a yönlendirilecek; dış IPv6 ve diğer adaptör çıkışları WFP ile engellenecek. Protokol ek yükleri, yeniden iletim ve Android isim çözümü bu payload sayacına dahil değildir; operatör faturası için kesin üst sınır değildir. TetherMax'e özel IP, iki /1 rota ve geçici DNS kuralı eklenecek. Ethernet 5 kapatılmaz. Resmî Wintun sürücüsü yüklenebilir; paylaşılan sürücü paketi test sonunda silinmez. Bağlantı başarısızsa mevcut internetiniz ve bu sohbet geçici kesilebilir. Ayrı kurtarma süreci ayarları geri alır.\n\nArka plan uygulamaları da bütçeyi kullanabilir. Operatör karşılaştırma deneyi ayrıca onaylanmalıdır.\n\nBu somut ağ değişikliklerine ve belirtilen veri bütçesine şimdi izin veriyor musunuz?","Ayrı sistem geneli ağ onayı",MessageBoxButton.YesNo,MessageBoxImage.Warning)!=MessageBoxResult.Yes)return;
+        wantsDaily=!diagnostic;nextReconnect=DateTime.UtcNow.AddSeconds(30);
+        if(engine==null)await ConnectUsb();
         if(engine==null||selectedSerial==null||pairForward==null||dataForward==null){Note("USB eşleştirmesi kurulamadı; sistem ağı değiştirilmedi.");return;}
-        busy=true;
+        busy=true;wantsDaily=!diagnostic;nextReconnect=DateTime.UtcNow.AddSeconds(30);
         try {
             using var timeout=new CancellationTokenSource(TimeSpan.FromSeconds(45));
             string secret=await Pairing.Connect(int.Parse(pairForward[4..]),selectedSerial,code=>Dispatcher.InvokeAsync(()=>MessageBox.Show(this,"Telefondaki numara aynı mı?\n"+code,"Güvenli eşleştirme",MessageBoxButton.YesNo)==MessageBoxResult.Yes).Task,timeout.Token);
@@ -206,17 +250,19 @@ internal sealed class Dashboard : Window
             await systemNetwork.Start(root,"127.0.0.1:"+dataForward[4..],secret,message=>Dispatcher.BeginInvoke(()=>{
                 Note(message);
                 try{using var record=JsonDocument.Parse(message);string? type=record.RootElement.GetProperty("type").GetString();
-                    if(type=="network-active")state.Text="Sistem geneli IPv4 · USB · IPv6 engelli";
-                    if(type=="network-stopped")state.Text="Sistem geneli test durdu · kurtarma kaydını kontrol edin";
+                    if(type=="network-active")state.Text="Wintun/USB etkin · internet doğrulanıyor";
+                    if(type=="windows-connectivity")state.Text=record.RootElement.GetProperty("result").GetProperty("checks").EnumerateArray().All(c=>c.GetProperty("passed").GetBoolean())?"İnternet doğrulandı · Wintun → USB → hücresel":"Wintun etkin · internet tanılaması başarısız";
+                    if(type=="ip-counters"&&record.RootElement.TryGetProperty("payload",out var payload)&&payload.TryGetProperty("type",out var payloadType)&&payloadType.GetString()=="traffic")trafficPanel.Accept(payload);
+                    if(type=="network-stopped"){state.Text=record.RootElement.GetProperty("recovered").GetBoolean()?"Sistem geneli oturum durdu · ağ kurtarıldı":"Ağ kurtarması bekliyor · kurtarma gerekli";_ = ReleaseStoppedNetwork();}
                     if(type=="network-report"){
                         string folder=Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),"TetherMax","reports");Directory.CreateDirectory(folder);
                         string file=Path.Combine(folder,"native-"+DateTime.UtcNow.ToString("yyyyMMdd-HHmmss-fffffff")+".json");
                         using var output=new FileStream(file,FileMode.CreateNew,FileAccess.Write,FileShare.Read);byte[] bytes=Encoding.UTF8.GetBytes(message);output.Write(bytes);output.Flush(true);Note("Windows/Android ayrı sayaç raporu: "+file);
                     }
                 }catch(JsonException){}catch(IOException e){Note("Yerel rapor kaydedilemedi: "+e.Message);}
-            }));secret="";
-            Note("Yönetici ağ yardımcısı başlatıldı; aktif veri yolu onayı bekleniyor. Test 120 saniyede geri alınır.");
-        }catch{if(systemNetwork!=null){await systemNetwork.DisposeAsync();systemNetwork=null;}throw;}
+            }),diagnostic?120:0,trafficPanel.Settings);secret="";
+            Note(diagnostic?"Tanılama başladı · 120 saniye / 1 MiB · otomatik geri alma":"Günlük bağlantı başlatıldı · süre ve relay veri sınırı yok · durdurmak için Bağlantıyı kes");
+        }catch(Exception error){if(error is System.ComponentModel.Win32Exception canceled&&canceled.NativeErrorCode==1223)wantsDaily=false;if(systemNetwork!=null){await systemNetwork.DisposeAsync();systemNetwork=null;}throw;}
         finally{busy=false;}
     }
     async Task ReadTelemetry(Process process)

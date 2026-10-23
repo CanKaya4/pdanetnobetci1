@@ -108,9 +108,9 @@ func runIP(args []string, framed bool) error {
 			output = os.Stderr
 		}
 	}
-	stop := startTrafficRuntime(ctx, cancel, qos, manager, link, os.Stdin, output)
-	defer stop()
 	if framed {
+		stop := startTrafficRuntime(ctx, cancel, qos, manager, link, os.Stdin, output)
+		defer stop()
 		return e.Run(ctx, &ipengine.FramedDevice{Stream: &stdioStream{input: os.Stdin, output: os.Stdout}})
 	}
 	// Reserve an immutable, previously nonexistent ownership journal before mutation.
@@ -144,6 +144,9 @@ func runIP(args []string, framed bool) error {
 		return err
 	}
 	json.NewEncoder(os.Stdout).Encode(identity)
+	// Readiness must be the first stdout record; profile telemetry starts later.
+	stop := startTrafficRuntime(ctx, cancel, qos, manager, link, os.Stdin, output)
+	defer stop()
 	countersDone := make(chan struct{})
 	go func() {
 		defer close(countersDone)

@@ -6,7 +6,7 @@ public static class Watchdog
 {
     public static void Recover(Journal journal,Plan p,IBackend backend,Action? stop=null)
     {
-        using var lease=journal.Lock();
+        using var lease=journal.Lock(TimeSpan.FromSeconds(55));
         if(journal.Completed)return;
         string executor=journal.PathFor("os-process.json");
         if(File.Exists(executor)) {

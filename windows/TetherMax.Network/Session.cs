@@ -104,7 +104,14 @@ public sealed class Journal
         using var file=new FileStream(PathFor("heartbeat"),FileMode.OpenOrCreate,FileAccess.Write,FileShare.ReadWrite);
         file.WriteByte(1);file.Flush(true);
     }
-    public FileStream Lock()=>new(PathFor("recovery.lock"),FileMode.OpenOrCreate,FileAccess.ReadWrite,FileShare.None);
+    public FileStream Lock(TimeSpan? wait=null)
+    {
+        var timer=Stopwatch.StartNew();
+        for(;;) {
+            try{return new FileStream(PathFor("recovery.lock"),FileMode.OpenOrCreate,FileAccess.ReadWrite,FileShare.None);}
+            catch(IOException e) when(wait.HasValue && timer.Elapsed<wait.Value && ((e.HResult&0xffff)==32||(e.HResult&0xffff)==33)) {Thread.Sleep(50);}
+        }
+    }
 }
 
 public static class ProcessIdentity

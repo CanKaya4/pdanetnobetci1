@@ -1,5 +1,18 @@
 # TetherMax
 
+## 0.6.0 yerel durum — 24 Ekim 2026
+
+Gerçek Galaxy A56 → USB → gVisor → Wintun üzerinden normal Windows HTTPS,
+UDP ve DNS doğrulandı. Windows MSI ve Android APK kullanıcı bilgisayarına
+kuruldu. Süresiz günlük bağlantı, yeniden açılış ve mevcut RNDIS bağlantısına
+kurtarma çalıştı. **Standart Android tethering kapalı kullanım ve Türk Telekom
+kota bağımsızlığı doğrulanmadı; tam günlük kullanım kabulü henüz tamamlanmadı.**
+
+[Güncel kanıt, kullanım ve kalan tek güvenli geçiş koşulu](docs/local-acceptance-2026-10-24.md).
+Bağlan günlük sistem geneli bağlantıdır; Sistem geneli USB testi 120 saniye /
+1 MiB tanılama modudur. Önceki sürümlere ait aşağıdaki notlar tarihseldir;
+0.6.0 için yukarıdaki güncel kabul kaydı esas alınmalıdır.
+
 ## Öncelik güncellemesi — 23 Ekim 2026
 
 Ana hedef standart Android hotspot/RNDIS internetine ihtiyaç duymayan USB

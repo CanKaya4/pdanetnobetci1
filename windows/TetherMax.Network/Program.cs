@@ -19,6 +19,14 @@ public static class Program
         try {
             ProcessLaunch.DetachStandardHandleInheritance();
             if(args.Length==0||args.SequenceEqual(new[]{"status"})) {Console.WriteLine("TetherMax network controller inactive; no OS changes. connect requires separate global routing and USB consent.");return 0;}
+            if(args.SequenceEqual(new[]{"recover-stale","--approve-network-recovery"})) {
+                Admin();foreach(string folder in Directory.EnumerateDirectories(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData),"TetherMax-Network-*")) {
+                    if(!File.Exists(Path.Combine(folder,"intent.json"))||File.Exists(Path.Combine(folder,"complete")))continue;
+                    var journal=new Journal(folder);var plan=journal.Read();
+                    if(ProcessIdentity.Alive(plan.GuardianPid,plan.GuardianStart))throw new IOException("Etkin TetherMax oturumu var; önce bağlantıyı kesin.");
+                    Watchdog.Recover(journal,plan,new NativeBackend(journal));
+                }return 0;
+            }
             if(args.SequenceEqual(new[]{"recovery-self-test","--approve-network-recovery"})) {Admin();await DurableRecovery.SelfTest();return 0;}
             if(args.Length==2&&args[0]=="emergency") {Admin();DurableRecovery.Run(new Journal(args[1]));return 0;}
             if(args.Length==2&&args[0]=="watch") {Admin();var j=new Journal(args[1]);return await Watchdog.Run(j,j.Read(),new NativeBackend(j));}
@@ -28,7 +36,7 @@ public static class Program
             Admin();return await Connect(args[1]);
         }catch(Exception e){Console.Error.WriteLine(e.Message);return 1;}
     }
-    sealed record Request(string Transport,string Token,int MaxSeconds,long MaxPayloadBytes);
+    sealed record Request(string Transport,string Token,int MaxSeconds,long MaxPayloadBytes,string Profile="auto",double UploadMbps=0,double DownloadMbps=0,bool Adaptive=false);
     static async Task<string> CellularStatus(string engine,string transport,string bearer)
     {
         var start=new ProcessStartInfo(engine){UseShellExecute=false,CreateNoWindow=true,RedirectStandardInput=true,RedirectStandardOutput=true,RedirectStandardError=true};
@@ -61,6 +69,7 @@ public static class Program
         var request=JsonSerializer.Deserialize<Request>(line)??throw new IOException("Invalid private request");line="";
         if(!Regex.IsMatch(request.Transport,"^127\\.0\\.0\\.1:[0-9]{1,5}$")||!Regex.IsMatch(request.Token,"^[a-f0-9]{32}$")||request.MaxSeconds<0||request.MaxSeconds>300||request.MaxPayloadBytes<0||request.MaxPayloadBytes>10*1024*1024||(request.MaxSeconds>0&&request.MaxPayloadBytes==0))
             throw new IOException("Invalid private transport or bounded test duration");
+        if(!new[]{"auto","gaming","streaming","daily","maximum"}.Contains(request.Profile)||!double.IsFinite(request.UploadMbps)||!double.IsFinite(request.DownloadMbps)||request.UploadMbps<0||request.UploadMbps>10000||request.DownloadMbps<0||request.DownloadMbps>10000||(request.Adaptive&&request.UploadMbps==0))throw new IOException("Invalid traffic profile");
         // Refuse a new activation while earlier durable intents need recovery.
         foreach(string folder in Directory.EnumerateDirectories(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData),"TetherMax-Network-*"))
             if(File.Exists(Path.Combine(folder,"intent.json"))&&!File.Exists(Path.Combine(folder,"complete")))throw new IOException("Unrecovered prior network session: "+folder);
@@ -71,6 +80,8 @@ public static class Program
         journal.WriteNew("android-before.json",await CellularStatus(engine,request.Transport,bearer));
         var start=new ProcessStartInfo(engine){UseShellExecute=false,CreateNoWindow=true,RedirectStandardInput=true,RedirectStandardOutput=true,RedirectStandardError=true};
         foreach(string arg in new[]{"ip-worker","--approve-adapter-change","--approve-usb-test","--transport",request.Transport,"--payload-budget-bytes",request.MaxPayloadBytes.ToString(System.Globalization.CultureInfo.InvariantCulture),"--wintun-dll",dll,"--journal",journal.PathFor("adapter.jsonl")})start.ArgumentList.Add(arg);
+        foreach(string arg in new[]{"--profile",request.Profile,"--upload-mbps",request.UploadMbps.ToString(System.Globalization.CultureInfo.InvariantCulture),"--download-mbps",request.DownloadMbps.ToString(System.Globalization.CultureInfo.InvariantCulture),"--traffic-telemetry"})start.ArgumentList.Add(arg);
+        if(request.Adaptive)start.ArgumentList.Add("--adaptive");
         using var worker=Process.Start(start)??throw new IOException("IP worker did not start");
         var stderr=worker.StandardError.ReadToEndAsync();
         worker.StandardInput.NewLine="\n";await worker.StandardInput.WriteLineAsync(request.Token);await worker.StandardInput.FlushAsync();
@@ -79,7 +90,7 @@ public static class Program
         // startup/configuration is in progress. They never carry the bearer.
         Task pulse=Task.Run(async()=>{try{while(!lifetime.IsCancellationRequested){journal.Pulse();await worker.StandardInput.BaseStream.WriteAsync(new byte[]{0},lifetime.Token);await worker.StandardInput.BaseStream.FlushAsync(lifetime.Token);await Task.Delay(1000,lifetime.Token);}}catch{lifetime.Cancel();}});
         Plan? plan=null;Process? watcher=null;Task? telemetry=null;
-        JsonElement? lastCounters=null;
+        JsonElement? lastCounters=null; Task? connectivity=null; using var connectivityStop=CancellationTokenSource.CreateLinkedTokenSource(lifetime.Token);
         var outputLock=new SemaphoreSlim(1);
         async Task Send(object value){await outputLock.WaitAsync();try{await writer.WriteLineAsync(JsonSerializer.Serialize(value));}finally{outputLock.Release();}}
         try {
@@ -105,13 +116,15 @@ public static class Program
                 if(journal.ReadPublished("watcher-ready")!=watcher.Id.ToString())throw new IOException("Recovery acknowledgement mismatch");
             });
             journal.WriteNew("measurement.json",JsonSerializer.Serialize(new{startedAt=DateTimeOffset.UtcNow,request.MaxPayloadBytes,MaxSeconds=maxSeconds,adapter=name,guid,operatorAccounting="not-measured",standardAndroidTethering="not-observed"}));
-            telemetry=Task.Run(async()=>{try{using var log=new StreamWriter(new FileStream(journal.PathFor("host-counters.jsonl"),FileMode.CreateNew,FileAccess.Write,FileShare.Read)){AutoFlush=true};while(await worker.StandardOutput.ReadLineAsync() is string data){using var item=JsonDocument.Parse(data);lastCounters=item.RootElement.Clone();await log.WriteLineAsync(JsonSerializer.Serialize(new{observedAt=DateTimeOffset.UtcNow,payload=item.RootElement.Clone()}));try{await Send(new{type="ip-counters",payload=item.RootElement.Clone()});}catch{}}}catch{lifetime.Cancel();}});
+            telemetry=Task.Run(async()=>{try{using var log=new StreamWriter(new FileStream(journal.PathFor("host-counters.jsonl"),FileMode.CreateNew,FileAccess.Write,FileShare.Read)){AutoFlush=true};while(await worker.StandardOutput.ReadLineAsync() is string data){using var item=JsonDocument.Parse(data);if(item.RootElement.TryGetProperty("type",out var sampleType)&&sampleType.GetString() is "ip-counters" or "ip-counters-final")lastCounters=item.RootElement.Clone();await log.WriteLineAsync(JsonSerializer.Serialize(new{observedAt=DateTimeOffset.UtcNow,payload=item.RootElement.Clone()}));try{await Send(new{type="ip-counters",payload=item.RootElement.Clone()});}catch{}}}catch{lifetime.Cancel();}});
             await Send(new{type="network-active",adapter=name,guid,session=journal.Folder,scope="system-wide IPv4; non-loopback IPv6 blocked; not carrier certification"});
+            connectivity=Task.Run(async()=>{try{string result=await ConnectivityChecks.Run(guid,connectivityStop.Token);journal.WriteNew("windows-connectivity.json",result);await Send(new{type="windows-connectivity",result=JsonSerializer.Deserialize<JsonElement>(result)});}catch(Exception e){try{journal.WriteNew("windows-connectivity-error.txt",e.Message);}catch{}}});
             Task heartbeat=Task.Run(async()=>{try{while(!lifetime.IsCancellationRequested){using var timeout=CancellationTokenSource.CreateLinkedTokenSource(lifetime.Token);timeout.CancelAfter(TimeSpan.FromSeconds(5));string? command=await reader.ReadLineAsync(timeout.Token);if(command!="heartbeat")break;}}catch{}finally{lifetime.Cancel();}});
             var uptime=Stopwatch.StartNew();
             while(!lifetime.IsCancellationRequested&&!worker.HasExited&&watcher is {HasExited:false}&&(maxSeconds==0||uptime.Elapsed<TimeSpan.FromSeconds(maxSeconds)))await Task.Delay(100,lifetime.Token);
         }catch(Exception e){try{journal.WriteNew("activation-error.txt",e.ToString());}catch{}try{await Send(new{type="network-error",message=e.Message});}catch{}}
         finally {
+            connectivityStop.Cancel();if(connectivity!=null)await connectivity;
             try{journal.WriteNew("android-after.json",await CellularStatus(engine,request.Transport,bearer));}catch(Exception e){try{journal.WriteNew("android-after-error.txt",e.Message);}catch{}}
             bearer="";
             // Keep worker heartbeat alive until routes/DNS are removed. If the
@@ -126,7 +139,7 @@ public static class Program
             try {
                 JsonElement? ReadJson(string name){if(!File.Exists(journal.PathFor(name)))return null;using var doc=JsonDocument.Parse(File.ReadAllText(journal.PathFor(name)));return doc.RootElement.Clone();}
                 await Send(new{type="network-report",endedAt=DateTimeOffset.UtcNow,recovered=recovered||journal.Completed,session=journal.Folder,
-                    measurement=ReadJson("measurement.json"),androidBefore=ReadJson("android-before.json"),androidAfter=ReadJson("android-after.json"),hostLastSample=lastCounters,
+                    measurement=ReadJson("measurement.json"),windowsConnectivity=ReadJson("windows-connectivity.json"),androidBefore=ReadJson("android-before.json"),androidAfter=ReadJson("android-after.json"),hostLastSample=lastCounters,
                     hostFinalSample=lastCounters?.GetProperty("type").GetString()=="ip-counters-final",operatorAccounting="not-measured",androidStandardTetheringOff="not-observed"});
             }catch{}
             try{await Send(new{type="network-stopped",recovered,session=journal.Folder});}catch{}
