@@ -21,6 +21,7 @@ func (s Server) Serve(ctx context.Context, listener net.Listener) error {
 	if err := LoopbackAddress(listener.Addr().String()); err != nil {
 		return err
 	}
+	ctx, cancel := context.WithCancel(ctx)
 	var wg sync.WaitGroup
 	slots := make(chan struct{}, 128)
 	done := make(chan struct{})
@@ -32,7 +33,7 @@ func (s Server) Serve(ctx context.Context, listener net.Listener) error {
 		case <-done:
 		}
 	}()
-	defer wg.Wait()
+	defer func() { cancel(); wg.Wait() }()
 	for {
 		c, err := listener.Accept()
 		if err != nil {

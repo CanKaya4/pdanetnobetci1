@@ -342,6 +342,31 @@ func TestJavaEngineEndToEnd(t *testing.T) {
 			t.Fatalf("%v %v", b, e)
 		}
 	})
+	t.Run("ListenerFailureClosesActiveConnections", func(t *testing.T) {
+		l, e := net.Listen("tcp", "127.0.0.1:0")
+		if e != nil {
+			t.Fatal(e)
+		}
+		stopped := make(chan error, 1)
+		go func() { stopped <- (Server{Transport: transport}).Serve(ctx, l) }()
+		c := socksConnect(t, l.Addr().String(), 1, echoHost, echoPort)
+		defer c.Close()
+		l.Close()
+		select {
+		case e := <-stopped:
+			if e == nil {
+				t.Fatal("listener failure was lost")
+			}
+		case <-time.After(3 * time.Second):
+			t.Fatal("listener failure stranded active relay")
+		}
+		c.SetReadDeadline(time.Now().Add(time.Second))
+		b := make([]byte, 1)
+		_, e = c.Read(b)
+		if e == nil {
+			t.Fatal("active connection survived listener failure")
+		}
+	})
 	t.Run("CancellationClosesActiveConnections", func(t *testing.T) {
 		c := socksConnect(t, socks, 1, echoHost, echoPort)
 		defer c.Close()

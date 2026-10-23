@@ -18,6 +18,7 @@ cp build/android/base.apk build/android/unsigned.apk
 if [[ ! -f build/android/debug.keystore ]]; then
  keytool -genkeypair -keystore build/android/debug.keystore -storepass android -keypass android -alias androiddebugkey -keyalg RSA -keysize 3072 -validity 3650 -dname 'CN=TetherMax Development' -noprompt
 fi
-"$SDK_BUILD_TOOLS/apksigner" sign --ks build/android/debug.keystore --ks-pass pass:android --ks-key-alias androiddebugkey --out build/artifacts/tethermax-android-debug.apk build/android/aligned.apk
+rm -f build/artifacts/tethermax-android-debug.apk.idsig
+"$SDK_BUILD_TOOLS/apksigner" sign --v4-signing-enabled false --ks build/android/debug.keystore --ks-pass pass:android --ks-key-alias androiddebugkey --out build/artifacts/tethermax-android-debug.apk build/android/aligned.apk
 "$SDK_BUILD_TOOLS/apksigner" verify --verbose build/artifacts/tethermax-android-debug.apk
 "$SDK_BUILD_TOOLS/aapt2" dump badging build/artifacts/tethermax-android-debug.apk > build/reports/apk-badging.txt
