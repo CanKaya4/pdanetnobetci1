@@ -24,6 +24,7 @@ internal sealed class Dashboard : Window
     readonly TrafficPanel trafficPanel=new();
     Process? engine; CancellationTokenSource? session; bool busy, closing, refreshing; string? selectedSerial; string? pairForward, dataForward;
     int socksPort=1088;
+    SystemNetwork? systemNetwork;
     readonly DispatcherTimer timer = new() { Interval=TimeSpan.FromSeconds(5) };
     readonly string adb = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),"Android","Sdk","platform-tools","adb.exe");
     readonly string root = AppContext.BaseDirectory;
@@ -43,6 +44,7 @@ internal sealed class Dashboard : Window
         Button(actions,"İnternet testi",async()=>await Diagnose());
         Button(actions,"IP motoru testi",async()=>await DiagnoseIP());
         Button(actions,"Windows ağ yolu raporu",async()=>await AuditNetwork());
+        Button(actions,"Sistem geneli USB testi",async()=>await ConnectSystemNetwork());
         Button(actions,"Eşleştirmeyi unut",async()=>{await Disconnect();if(devices.SelectedItem is Device d){Pairing.Forget(d.Serial);Note("Windows eşleştirmesi silindi. Telefonda da Güvenilen bilgisayarları unut seçeneğini kullanın.");}});
         panel.Children.Add(reconnect);
         try {
@@ -179,11 +181,27 @@ internal sealed class Dashboard : Window
     }
     async Task Disconnect()
     {
+        if(systemNetwork!=null){await systemNetwork.DisposeAsync();systemNetwork=null;}
         session?.Cancel();session?.Dispose();session=null;
         if(engine!=null){try{if(!engine.HasExited){engine.Kill();await engine.WaitForExitAsync();}}catch{}engine.Dispose();engine=null;}
         if(selectedSerial!=null)foreach(var endpoint in new[]{pairForward,dataForward})if(endpoint!=null)try{await Adb("-s",selectedSerial,"forward","--remove",endpoint);}catch(Exception ex){Note("Forward temizliği: "+ex.Message);}
         pairForward=null;dataForward=null;state.Text="Bağlantı kapalı";
         trafficPanel.Reset();
+    }
+    async Task ConnectSystemNetwork()
+    {
+        if(busy||systemNetwork!=null)return;
+        if(engine==null||selectedSerial==null||pairForward==null||dataForward==null){Note("Önce yetkili USB eşleştirmesini kurun.");return;}
+        if(MessageBox.Show(this,"Bu ayrı fiziksel geçiş testidir. 120 saniyeye kadar tüm IPv4 çıkışı TetherMax Wintun'a yönlendirilecek; dış IPv6 ve diğer adaptör çıkışları WFP ile engellenecek. TetherMax'e özel IP, iki /1 rota ve geçici DNS kuralı eklenecek. Ethernet 5 kapatılmaz. Bağlantı başarısızsa mevcut internetiniz ve bu sohbet geçici kesilebilir. Ayrı kurtarma süreci ayarları geri alır.\n\nMobil trafik arka plandaki uygulamalardan da gelebilir; bu test kota ölçüm testi değildir ve veri bütçesi uygulamaz. Operatör veri deneyi ayrıca onaylanmalıdır.\n\nBu somut ağ değişikliklerine şimdi izin veriyor musunuz?","Ayrı sistem geneli ağ onayı",MessageBoxButton.YesNo,MessageBoxImage.Warning)!=MessageBoxResult.Yes)return;
+        busy=true;
+        try {
+            using var timeout=new CancellationTokenSource(TimeSpan.FromSeconds(45));
+            string secret=await Pairing.Connect(int.Parse(pairForward[4..]),selectedSerial,code=>Dispatcher.InvokeAsync(()=>MessageBox.Show(this,"Telefondaki numara aynı mı?\n"+code,"Güvenli eşleştirme",MessageBoxButton.YesNo)==MessageBoxResult.Yes).Task,timeout.Token);
+            systemNetwork=new SystemNetwork();
+            await systemNetwork.Start(root,"127.0.0.1:"+dataForward[4..],secret,message=>Dispatcher.BeginInvoke(()=>{Note(message);if(message.Contains("\"network-active\""))state.Text="Sistem geneli IPv4 · USB · IPv6 engelli";if(message.Contains("\"network-stopped\""))state.Text="Sistem geneli test durdu · kurtarma kaydını kontrol edin";}));secret="";
+            Note("Yönetici ağ yardımcısı başlatıldı; aktif veri yolu onayı bekleniyor. Test 120 saniyede geri alınır.");
+        }catch{if(systemNetwork!=null){await systemNetwork.DisposeAsync();systemNetwork=null;}throw;}
+        finally{busy=false;}
     }
     async Task ReadTelemetry(Process process)
     {
