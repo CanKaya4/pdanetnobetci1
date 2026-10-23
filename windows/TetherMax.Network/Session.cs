@@ -74,8 +74,12 @@ public sealed class Journal
     public string PathFor(string name)=>Path.Combine(Folder,name);
     public void WriteNew(string name,string data)
     {
-        using var file=new FileStream(PathFor(name),FileMode.CreateNew,FileAccess.Write,FileShare.Read);
-        byte[] bytes=System.Text.Encoding.UTF8.GetBytes(data);file.Write(bytes);file.Flush(true);
+        string staged=PathFor(name+"."+Guid.NewGuid().ToString("N")+".tmp");
+        using(var file=new FileStream(staged,FileMode.CreateNew,FileAccess.Write,FileShare.None))
+        {byte[] bytes=System.Text.Encoding.UTF8.GetBytes(data);file.Write(bytes);file.Flush(true);}
+        // Publish only after the writer has flushed AND closed. File.Exists on
+        // an open destination was not a durable/readable readiness handshake.
+        File.Move(staged,PathFor(name));
     }
     public Plan Read()
     {

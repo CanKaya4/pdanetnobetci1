@@ -122,6 +122,11 @@ class Program
             using(var metadata=JsonDocument.Parse(File.ReadAllText(metadataJournal.PathFor("os-process.json"))))
                 Require(metadata.RootElement.GetProperty("pid").GetInt32()>0&&metadata.RootElement.GetProperty("start").GetInt64()>0&&!File.Exists(metadataJournal.PathFor("os-process.tmp")),"executor metadata publication failed");
             Console.WriteLine("PASS actual Windows PowerShell atomic metadata replacement in quoted Unicode path; no network commands");
+            string completePayload=new('r',1024*1024);
+            Task publish=Task.Run(()=>metadataJournal.WriteNew("atomic-ready",completePayload));
+            while(!File.Exists(metadataJournal.PathFor("atomic-ready")))await Task.Yield();
+            Require(File.ReadAllText(metadataJournal.PathFor("atomic-ready"))==completePayload,"readiness visible before complete publication");await publish;
+            Console.WriteLine("PASS journal/readiness becomes visible only after complete atomic publication");
             foreach(string mode in new[]{"owner-crash","stall","watcher-crash","retry","os-executor"})await FixtureProcessTest(mode);
             Console.WriteLine("All offline network checks passed; no OS networking or physical USB used.");return 0;
         }catch(Exception e){Console.Error.WriteLine(e);return 1;}
