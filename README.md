@@ -35,6 +35,8 @@ doğrular, SDK paketleri SDK manager doğrulamasından geçer. SDK şartları ku
 kabul edilir. `TETHERMAX_TOOLS`, `JAVA_HOME`, `ANDROID_SDK_ROOT` ile CI ortamındaki
 araçlar kullanılabilir. Mevcut checkout kullanılır; yeni worktree oluşturulmaz.
 
+[İndirmeler](https://github.com/CanKaya4/pdanetnobetci1/releases/tag/v0.1.0-engine-preview) geliştirme önizlemesidir. APK veya USB testini ayrıca onay vermeden çalıştırmayın.
+
 Çıktılar `build/artifacts/`, raporlar `build/reports/` altındadır. `scripts/test.sh`
 yeni derlenen Java motoruyla Go istemcisini gerçek loopback soketlerinde test eder;
 Java fixture dış adreslere çıkmayı reddeder. Fiziksel telefon veya yerel Windows

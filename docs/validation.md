@@ -24,9 +24,17 @@ Current-instance checks in Codex Cloud on 2026-10-23:
   Linux CLI's default exits inactive and serve refuses absent explicit approval.
   Windows ZIPs contain runtime license notices.
 
-GitHub-hosted native Windows and independent Linux checks are recorded by the
-repository's Actions workflow. Their results must be read from a completed run;
-workflow definitions alone are not passing evidence.
+Independent GitHub-hosted native Windows and Linux checks both passed for engine
+commit `5479609541b18087292db514b080537eb1f1ff47`:
+https://github.com/CanKaya4/pdanetnobetci1/actions/runs/39969507113
+This includes 27 passing cases when counting named subtests (7 top-level tests),
+no failures and no skips. The Windows job executed the actual Java/Go loopback
+suite natively and verified the Windows executable's inactive default and opt-in
+safety gate. The Linux job independently built and verified the APK and compiled
+the Windows distributions. CI used Temurin 21.0.12, while the prepared Codex Cloud
+instance used Temurin 21.0.13. Workflow definitions alone are not evidence; the
+linked completed run supplies that evidence. Preview tag builds repeat these
+checks before releasing artifacts.
 
 Not executed: Android emulator/device runtime, physical ADB/USB, actual cellular
 DNS/Internet, Samsung A56, Türk Telekom 5G, PdaNet or MyPublicWiFi interoperability,
