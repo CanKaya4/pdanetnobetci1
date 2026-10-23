@@ -1,16 +1,23 @@
 """Build a per-user MSI from the published folder; never install it automatically."""
 import hashlib
+import argparse
 import uuid
 import subprocess
 import xml.etree.ElementTree as ET
 from pathlib import Path
 root=Path(__file__).resolve().parent.parent
-publish=root/'build/windows-portable'
+parser=argparse.ArgumentParser(description=__doc__)
+parser.add_argument('--publish-dir',type=Path,default=root/'build/windows-portable')
+parser.add_argument('--output',type=Path,default=root/'build/artifacts/tethermax-windows-x64-preview.msi')
+args=parser.parse_args()
+publish=args.publish_dir.resolve()
+if not (publish/'TetherMax.exe').is_file() or not (publish/'tethermax-engine.exe').is_file() or not (publish/'network-audit.ps1').is_file():
+ raise SystemExit('Fresh desktop, engine and read-only audit script required before packaging')
 ns='http://wixtoolset.org/schemas/v4/wxs'
 ET.register_namespace('',ns)
 def add(parent,tag,**attrs): return ET.SubElement(parent,'{'+ns+'}'+tag,attrs)
 wix=ET.Element('{'+ns+'}Wix')
-pkg=add(wix,'Package',Name='TetherMax USB Preview',Manufacturer='TetherMax',Version='0.4.0',UpgradeCode='B1E69BC8-E38E-47FC-9C33-11E7C7FD6582',Scope='perUser',Language='1055')
+pkg=add(wix,'Package',Name='TetherMax USB Preview',Manufacturer='TetherMax',Version='0.4.1',UpgradeCode='B1E69BC8-E38E-47FC-9C33-11E7C7FD6582',Scope='perUser',Language='1055')
 add(pkg,'MajorUpgrade',DowngradeErrorMessage='A newer TetherMax preview is already installed.')
 add(pkg,'MediaTemplate',EmbedCab='yes')
 local=add(pkg,'StandardDirectory',Id='LocalAppDataFolder')
@@ -40,5 +47,5 @@ for i,d in enumerate(dirs.values()): add(cleanup,'RemoveFolder',Id='RemoveDir'+s
 add(feature,'ComponentRef',Id='DirectoryCleanup')
 source=root/'build/tethermax-installer.wxs'
 ET.ElementTree(wix).write(source,encoding='utf-8',xml_declaration=True)
-subprocess.run([str(root/'.ci-tools/wix/wix.exe'),'build',str(source),'-arch','x64','-o',str(root/'build/artifacts/tethermax-windows-x64-preview.msi')],check=True)
+subprocess.run([str(root/'.ci-tools/wix/wix.exe'),'build',str(source),'-arch','x64','-o',str(args.output.resolve())],check=True)
 

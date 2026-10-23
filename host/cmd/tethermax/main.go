@@ -12,6 +12,9 @@ import (
 )
 
 func run(args []string) error {
+	if len(args) > 0 && args[0] == "route-plan" {
+		return runRoutePlan(args[1:])
+	}
 	if len(args) > 0 && args[0] == "ip-check" {
 		return runIPCheck(args[1:])
 	}
@@ -22,7 +25,7 @@ func run(args []string) error {
 		return runIP(args[1:], false)
 	}
 	if len(args) == 0 || args[0] == "status" {
-		fmt.Println("TetherMax 0.4.0-engine: inactive. No adapter, route, DNS, PdaNet or MyPublicWiFi changes. USB SOCKS, IPv4 netstack and experimental flow pacing available; system-wide routing is not enabled.")
+		fmt.Println("TetherMax 0.4.1-engine: inactive. No adapter, route, DNS, PdaNet or MyPublicWiFi changes. USB SOCKS, IPv4 netstack and isolated route dry-run available; system-wide routing is not enabled.")
 		return nil
 	}
 	if args[0] != "serve" {

@@ -27,22 +27,42 @@ import (
 )
 
 type IPProbe struct {
-	HTTPStatus        int
-	HTTPSMilliseconds float64
-	HTTPSBytes        int64
-	DNSMilliseconds   []float64
-	Counters          Counters
-	Errors            []string
-	Passed            bool
-	Scope             string
-	PhoneNetwork      string
-	Traffic           *traffic.Snapshot
+	HTTPStatus           int
+	HTTPSMilliseconds    float64
+	HTTPSBytes           int64
+	DNSMilliseconds      []float64
+	Counters             Counters
+	Errors               []string
+	Passed               bool
+	Scope                string
+	PhoneNetwork         string
+	Traffic              *traffic.Snapshot
+	AndroidBefore        *bridge.RemoteStatus
+	AndroidAfter         *bridge.RemoteStatus
+	AndroidUploadDelta   uint64
+	AndroidDownloadDelta uint64
+	SystemWideVerified   bool
+	HotspotOffVerified   bool
 }
 
 // ProbeUSB uses two memory-only IP NICs. Only bridge.Transport opens an OS TCP
 // connection, to the already approved localhost ADB endpoint. No Wintun is loaded.
 func ProbeUSB(ctx context.Context, transport bridge.Transport, policies ...*traffic.Manager) IPProbe {
 	result := IPProbe{Scope: "in-memory IPv4 -> authenticated USB relay -> cellular sockets; no OS route/DNS/adapter change"}
+	// Attest before generating mobile traffic. A successful Windows direct
+	// connection is never consulted as a substitute for this private transport.
+	beforeControl, beforeErr := transport.OpenControl(ctx)
+	if beforeErr != nil {
+		result.Errors = append(result.Errors, "initial cellular attestation unavailable")
+		return result
+	}
+	before, beforeErr := beforeControl.Status()
+	beforeControl.Close()
+	if beforeErr != nil || !strings.HasPrefix(before.Network, "CELLULAR ") {
+		result.Errors = append(result.Errors, "initial cellular attestation rejected")
+		return result
+	}
+	result.AndroidBefore = &before
 	var policy *traffic.Manager
 	if len(policies) > 0 {
 		policy = policies[0]
@@ -179,6 +199,16 @@ func ProbeUSB(ctx context.Context, transport bridge.Transport, policies ...*traf
 		controlErr = statusErr
 		if statusErr == nil {
 			result.PhoneNetwork = status.Network
+			result.AndroidAfter = &status
+			if status.Uploaded < before.Uploaded || status.Downloaded < before.Downloaded {
+				result.Errors = append(result.Errors, "Android counters reset during probe")
+			} else {
+				result.AndroidUploadDelta = status.Uploaded - before.Uploaded
+				result.AndroidDownloadDelta = status.Downloaded - before.Downloaded
+			}
+			if status.Network != before.Network {
+				result.Errors = append(result.Errors, "cellular network changed during probe")
+			}
 		}
 	}
 	if controlErr != nil {
@@ -188,6 +218,6 @@ func ProbeUSB(ctx context.Context, transport bridge.Transport, policies ...*traf
 		s := policy.Snapshot()
 		result.Traffic = &s
 	}
-	result.Passed = result.HTTPStatus == 200 && len(result.DNSMilliseconds) == 5 && len(result.Errors) == 0 && strings.HasPrefix(result.PhoneNetwork, "CELLULAR ")
+	result.Passed = result.HTTPStatus == 200 && len(result.DNSMilliseconds) == 5 && len(result.Errors) == 0 && strings.HasPrefix(result.PhoneNetwork, "CELLULAR ") && result.AndroidUploadDelta > 0 && result.AndroidDownloadDelta > 0
 	return result
 }

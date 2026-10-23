@@ -3,7 +3,8 @@
     <OutputType>WinExe</OutputType><TargetFramework>net9.0-windows</TargetFramework>
     <UseWPF>true</UseWPF><Nullable>enable</Nullable><ImplicitUsings>enable</ImplicitUsings>
     <AssemblyName>TetherMax</AssemblyName><EnableDefaultApplicationDefinition>false</EnableDefaultApplicationDefinition>
-    <Version>0.4.0</Version><Product>TetherMax USB Preview</Product>
+    <Version>0.4.1</Version><Product>TetherMax USB Preview</Product>
   </PropertyGroup>
   <ItemGroup><PackageReference Include="System.Security.Cryptography.ProtectedData" Version="9.0.0" /></ItemGroup>
+  <ItemGroup><Content Include="../../scripts/network-audit.ps1" Link="network-audit.ps1" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" /></ItemGroup>
 </Project>

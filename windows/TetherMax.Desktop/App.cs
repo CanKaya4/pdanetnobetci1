@@ -42,6 +42,7 @@ internal sealed class Dashboard : Window
         Button(actions,"Bağlan",async()=>await Connect()); Button(actions,"Bağlantıyı kes",async()=>{reconnect.IsChecked=false;await Disconnect();});
         Button(actions,"İnternet testi",async()=>await Diagnose());
         Button(actions,"IP motoru testi",async()=>await DiagnoseIP());
+        Button(actions,"Windows ağ yolu raporu",async()=>await AuditNetwork());
         Button(actions,"Eşleştirmeyi unut",async()=>{await Disconnect();if(devices.SelectedItem is Device d){Pairing.Forget(d.Serial);Note("Windows eşleştirmesi silindi. Telefonda da Güvenilen bilgisayarları unut seçeneğini kullanın.");}});
         panel.Children.Add(reconnect);
         try {
@@ -66,6 +67,40 @@ internal sealed class Dashboard : Window
         button.Click+=async(_,_)=>{try{await handler();}catch(Exception ex){Note(ex.Message);}};parent.Children.Add(button);
     }
     void Note(string message){log.AppendText(DateTime.Now.ToString("HH:mm:ss")+"  "+message+Environment.NewLine);if(log.Text.Length>65536)log.Text=log.Text[^49152..];log.ScrollToEnd();}
+    async Task AuditNetwork()
+    {
+        string script=Path.Combine(root,"network-audit.ps1");
+        if(!File.Exists(script))throw new IOException("Salt okunur ağ raporu betiği pakette bulunamadı.");
+        var start=new ProcessStartInfo(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.System),"WindowsPowerShell","v1.0","powershell.exe"))
+        {UseShellExecute=false,CreateNoWindow=true,RedirectStandardOutput=true,RedirectStandardError=true,StandardOutputEncoding=Encoding.UTF8};
+        // Inline bundled read-only commands work with the default Restricted
+        // script-file policy. No process/machine execution policy is changed.
+        string commands=Convert.ToBase64String(Encoding.Unicode.GetBytes(await File.ReadAllTextAsync(script)));
+        foreach(string argument in new[]{"-NoProfile","-NonInteractive","-EncodedCommand",commands})start.ArgumentList.Add(argument);
+        using var process=Process.Start(start)??throw new IOException("Ağ raporu başlatılamadı.");
+        var output=process.StandardOutput.ReadToEndAsync();var error=process.StandardError.ReadToEndAsync();
+        using var deadline=new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        try{await process.WaitForExitAsync(deadline.Token);}catch{try{process.Kill();}catch{}throw;}
+        string json=await output, failure=await error;
+        if(process.ExitCode!=0)throw new IOException("Ağ raporu alınamadı: "+failure.Trim());
+        using var report=JsonDocument.Parse(json);
+        foreach(var route in report.RootElement.GetProperty("selectedRoutes").EnumerateArray())
+        {
+            string target=route.GetProperty("target").GetString()??"?";
+            foreach(var selection in route.GetProperty("selection").EnumerateArray())
+            {
+                if(selection.TryGetProperty("InterfaceAlias",out var name))Note("Windows rota seçimi · "+target+" → "+name.GetString());
+            }
+            if(route.GetProperty("error").ValueKind==JsonValueKind.String)Note("Windows rota seçimi · "+target+": "+route.GetProperty("error").GetString());
+        }
+        Note("Aktarım oturumu: "+(engine!=null&&!engine.HasExited?"TetherMax localhost SOCKS; yalnızca proxy kullanan uygulamalar":"TetherMax motoru kapalı")+". Sistem geneli ve hotspot kapalı çalışma doğrulanmadı.");
+        string folder=Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),"TetherMax","reports");
+        Directory.CreateDirectory(folder);
+        string path=Path.Combine(folder,"network-"+DateTime.UtcNow.ToString("yyyyMMdd-HHmmss-fffffff")+".json");
+        using(var file=new FileStream(path,FileMode.CreateNew,FileAccess.Write,FileShare.Read))
+        {byte[] bytes=Encoding.UTF8.GetBytes(json);await file.WriteAsync(bytes);file.Flush(true);}
+        Note("Salt okunur yapılandırma ve adaptör sayaçları kaydedildi: "+path+". Bu kayıt trafik yakalama kanıtı değildir.");
+    }
     async Task<string> Adb(params string[] arguments)
     {
         if(!File.Exists(adb))throw new IOException("Resmî Android SDK platform-tools bulunamadı. Mevcut ADB kurulumuna müdahale edilmedi.");
