@@ -81,11 +81,20 @@ public sealed class Journal
         // an open destination was not a durable/readable readiness handshake.
         File.Move(staged,PathFor(name));
     }
+        // Rename publication can briefly retain a Windows sharing lock. Retry only
+    // sharing/lock violations; malformed state and access denial still fail.
+    public string ReadPublished(string name)
+    {
+        for(int attempt=0;;attempt++) {
+            try{return File.ReadAllText(PathFor(name));}
+            catch(IOException e) when(attempt<40 && ((e.HResult&0xffff)==32||(e.HResult&0xffff)==33)) {Thread.Sleep(25);}
+        }
+    }
     public Plan Read()
     {
         string path=PathFor("intent.json");
         if((File.GetAttributes(path)&FileAttributes.ReparsePoint)!=0)throw new IOException("Redirected recovery intent");
-        var p=JsonSerializer.Deserialize<Plan>(File.ReadAllText(path))??throw new IOException("Missing recovery plan");p.Validate();return p;
+        var p=JsonSerializer.Deserialize<Plan>(ReadPublished("intent.json"))??throw new IOException("Missing recovery plan");p.Validate();return p;
     }
     public void Intent(Plan p)=>WriteNew("intent.json",JsonSerializer.Serialize(p));
     public void Complete(){if(!File.Exists(PathFor("complete")))WriteNew("complete","recovered");}

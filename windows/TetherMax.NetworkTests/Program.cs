@@ -125,8 +125,13 @@ class Program
             string completePayload=new('r',1024*1024);
             Task publish=Task.Run(()=>metadataJournal.WriteNew("atomic-ready",completePayload));
             while(!File.Exists(metadataJournal.PathFor("atomic-ready")))await Task.Yield();
-            Require(File.ReadAllText(metadataJournal.PathFor("atomic-ready"))==completePayload,"readiness visible before complete publication");await publish;
+            Require(metadataJournal.ReadPublished("atomic-ready")==completePayload,"readiness visible before complete publication");await publish;
             Console.WriteLine("PASS journal/readiness becomes visible only after complete atomic publication");
+            var sharingLock=new FileStream(metadataJournal.PathFor("atomic-ready"),FileMode.Open,FileAccess.ReadWrite,FileShare.None);
+            var pendingRead=Task.Run(()=>metadataJournal.ReadPublished("atomic-ready"));
+            await Task.Delay(100);Require(!pendingRead.IsCompleted,"sharing lock was not respected");sharingLock.Dispose();
+            Require(await pendingRead==completePayload,"sharing violation retry corrupted readiness data");
+            Console.WriteLine("PASS Windows sharing lock publication retry");
             foreach(string mode in new[]{"owner-crash","stall","watcher-crash","retry","os-executor"})await FixtureProcessTest(mode);
             Console.WriteLine("All offline network checks passed; no OS networking or physical USB used.");return 0;
         }catch(Exception e){Console.Error.WriteLine(e);return 1;}

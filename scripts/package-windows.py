@@ -10,6 +10,7 @@ root=Path(__file__).resolve().parent.parent
 parser=argparse.ArgumentParser(description=__doc__)
 parser.add_argument('--publish-dir',type=Path,default=root/'build/windows-portable')
 parser.add_argument('--output',type=Path,default=root/'build/artifacts/tethermax-windows-x64-preview.msi')
+parser.add_argument('--version',default='0.5.0')
 args=parser.parse_args()
 publish=args.publish_dir.resolve()
 if any(not (publish/name).is_file() for name in ('TetherMax.exe','tethermax-engine.exe','network-audit.ps1','TetherMax.Network.exe','wintun.dll','WINTUN-LICENSE.txt')):
@@ -24,7 +25,7 @@ ns='http://wixtoolset.org/schemas/v4/wxs'
 ET.register_namespace('',ns)
 def add(parent,tag,**attrs): return ET.SubElement(parent,'{'+ns+'}'+tag,attrs)
 wix=ET.Element('{'+ns+'}Wix')
-pkg=add(wix,'Package',Name='TetherMax USB Preview',Manufacturer='TetherMax',Version='0.5.0',UpgradeCode='B1E69BC8-E38E-47FC-9C33-11E7C7FD6582',Scope='perUser',Language='1055')
+pkg=add(wix,'Package',Name='TetherMax USB Preview',Manufacturer='TetherMax',Version=args.version,UpgradeCode='B1E69BC8-E38E-47FC-9C33-11E7C7FD6582',Scope='perUser',Language='1055')
 add(pkg,'MajorUpgrade',DowngradeErrorMessage='A newer TetherMax preview is already installed.')
 add(pkg,'MediaTemplate',EmbedCab='yes')
 local=add(pkg,'StandardDirectory',Id='LocalAppDataFolder')

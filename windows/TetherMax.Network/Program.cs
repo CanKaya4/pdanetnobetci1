@@ -19,6 +19,8 @@ public static class Program
         try {
             ProcessLaunch.DetachStandardHandleInheritance();
             if(args.Length==0||args.SequenceEqual(new[]{"status"})) {Console.WriteLine("TetherMax network controller inactive; no OS changes. connect requires separate global routing and USB consent.");return 0;}
+            if(args.SequenceEqual(new[]{"recovery-self-test","--approve-network-recovery"})) {Admin();await DurableRecovery.SelfTest();return 0;}
+            if(args.Length==2&&args[0]=="emergency") {Admin();DurableRecovery.Run(new Journal(args[1]));return 0;}
             if(args.Length==2&&args[0]=="watch") {Admin();var j=new Journal(args[1]);return await Watchdog.Run(j,j.Read(),new NativeBackend(j));}
             if(args.Length==3&&args[0]=="recover"&&args[2]=="--approve-network-recovery") {Admin();var j=new Journal(args[1]);Watchdog.Recover(j,j.Read(),new NativeBackend(j));return 0;}
             if(args.Length!=4||args[0]!="connect"||args[2]!="--approve-global-route-change"||args[3]!="--approve-usb-test"||!Regex.IsMatch(args[1],"^TetherMax-Network-[a-f0-9]{32}$"))
@@ -39,13 +41,13 @@ public static class Program
         string data=await output;if(data.Length>8192||p.ExitCode!=0)throw new IOException("Cellular source rejected: "+await error);
         return data;
     }
-    static async Task<int> Connect(string pipeName)
+    static Task<int> Connect(string pipeName)=>Task.Run(()=>
     {
         using var single=new Mutex(false,"Global\\TetherMax-Network-Session-v1");
         bool acquired=false;try{acquired=single.WaitOne(0);}catch(AbandonedMutexException){acquired=true;}
         if(!acquired)throw new IOException("Another system-wide session owns the controller");
-        try{return await Connected(pipeName);}finally{single.ReleaseMutex();}
-    }
+        try{return Connected(pipeName).GetAwaiter().GetResult();}finally{single.ReleaseMutex();}
+    });
     static async Task<int> Connected(string pipeName)
     {
         using var pipe=new NamedPipeClientStream(".",pipeName,PipeDirection.InOut,PipeOptions.Asynchronous);
@@ -92,6 +94,7 @@ public static class Program
             // the GUI/guardian/worker crashes. Durable WFP state also survives it.
             using(var mutation=journal.Lock())
             Transaction.Apply(plan,backend,()=>journal.Intent(plan),()=>{
+                DurableRecovery.Arm(journal,plan);
                 var watchStart=new ProcessStartInfo(Environment.ProcessPath!){UseShellExecute=false,CreateNoWindow=true,RedirectStandardInput=true,RedirectStandardOutput=true,RedirectStandardError=true};
                 watchStart.ArgumentList.Add("watch");watchStart.ArgumentList.Add(journal.Folder);
                 watcher=Process.Start(watchStart)??throw new IOException("Recovery watcher failed to start");
@@ -99,7 +102,7 @@ public static class Program
                 _=watcher.StandardOutput.ReadToEndAsync();_=watcher.StandardError.ReadToEndAsync();
                 var limit=Stopwatch.StartNew();
                 while(!File.Exists(journal.PathFor("watcher-ready"))) {if(watcher.HasExited||limit.Elapsed>TimeSpan.FromSeconds(10))throw new IOException("No independent recovery acknowledgement");Thread.Sleep(50);}
-                if(File.ReadAllText(journal.PathFor("watcher-ready"))!=watcher.Id.ToString())throw new IOException("Recovery acknowledgement mismatch");
+                if(journal.ReadPublished("watcher-ready")!=watcher.Id.ToString())throw new IOException("Recovery acknowledgement mismatch");
             });
             journal.WriteNew("measurement.json",JsonSerializer.Serialize(new{startedAt=DateTimeOffset.UtcNow,request.MaxPayloadBytes,MaxSeconds=maxSeconds,adapter=name,guid,operatorAccounting="not-measured",standardAndroidTethering="not-observed"}));
             telemetry=Task.Run(async()=>{try{using var log=new StreamWriter(new FileStream(journal.PathFor("host-counters.jsonl"),FileMode.CreateNew,FileAccess.Write,FileShare.Read)){AutoFlush=true};while(await worker.StandardOutput.ReadLineAsync() is string data){using var item=JsonDocument.Parse(data);lastCounters=item.RootElement.Clone();await log.WriteLineAsync(JsonSerializer.Serialize(new{observedAt=DateTimeOffset.UtcNow,payload=item.RootElement.Clone()}));try{await Send(new{type="ip-counters",payload=item.RootElement.Clone()});}catch{}}}catch{lifetime.Cancel();}});
