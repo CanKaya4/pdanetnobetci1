@@ -9,11 +9,13 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"net/netip"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/CanKaya4/pdanetnobetci1/host/internal/bridge"
+	"github.com/CanKaya4/pdanetnobetci1/host/internal/traffic"
 	"github.com/xjasonlyu/tun2socks/v2/core"
 	"github.com/xjasonlyu/tun2socks/v2/core/adapter"
 	"gvisor.dev/gvisor/pkg/buffer"
@@ -27,11 +29,13 @@ type FlowTransport interface {
 	DialContext(context.Context, byte, string, uint16) (net.Conn, error)
 }
 type Config struct {
-	Transport FlowTransport
-	MTU       uint32
-	MaxFlows  int
-	UDPIdle   time.Duration
-	TCPIdle   time.Duration
+	Transport     FlowTransport
+	MTU           uint32
+	MaxFlows      int
+	UDPIdle       time.Duration
+	TCPIdle       time.Duration
+	Traffic       *traffic.Manager
+	SharedClients []netip.Prefix
 }
 type Counters struct {
 	Uploaded, Downloaded, Flows, Rejected, Failed uint64
@@ -48,7 +52,10 @@ func (w measuredWriter) Write(b []byte) (int, error) {
 	return n, err
 }
 
-type flow struct{ local, remote net.Conn }
+type flow struct {
+	local, remote net.Conn
+	schedule      *traffic.Flow
+}
 
 // idleConn refreshes a shared inactivity deadline on successful I/O. Activity in
 // either direction keeps a long one-way download/upload alive; this is not a
@@ -196,7 +203,7 @@ func (e *Engine) ReadPacket(ctx context.Context) ([]byte, error) {
 	defer b.Release()
 	return append([]byte(nil), b.Flatten()...), nil
 }
-func (e *Engine) begin(c net.Conn) *flow {
+func (e *Engine) begin(c net.Conn, source string) *flow {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	if e.closed || len(e.live) >= e.cfg.MaxFlows {
@@ -205,12 +212,27 @@ func (e *Engine) begin(c net.Conn) *flow {
 		return nil
 	}
 	f := &flow{local: c}
+	if e.cfg.Traffic != nil {
+		class := traffic.Bulk
+		if ip, err := netip.ParseAddr(source); err == nil {
+			for _, prefix := range e.cfg.SharedClients {
+				if prefix.Contains(ip) {
+					class = traffic.Shared
+					break
+				}
+			}
+		}
+		f.schedule = e.cfg.Traffic.Flow(e.ctx, class)
+	}
 	e.live[f] = struct{}{}
 	e.wg.Add(1)
 	e.total.Add(1)
 	return f
 }
 func (e *Engine) finish(f *flow) {
+	if f.schedule != nil {
+		f.schedule.Close()
+	}
 	e.mu.Lock()
 	delete(e.live, f)
 	e.mu.Unlock()
@@ -236,11 +258,11 @@ func (e *Engine) dial(f *flow, mode byte, host string, port uint16) error {
 	return nil
 }
 func (e *Engine) HandleTCP(c adapter.TCPConn) {
-	f := e.begin(c)
+	id := c.ID()
+	f := e.begin(c, id.RemoteAddress.String())
 	if f == nil {
 		return
 	}
-	id := c.ID()
 	go func() {
 		defer e.finish(f)
 		if e.dial(f, 1, id.LocalAddress.String(), id.LocalPort) != nil {
@@ -254,19 +276,31 @@ func (e *Engine) HandleTCP(c adapter.TCPConn) {
 		touch()
 		local := idleConn{f.local, touch}
 		remote := idleConn{f.remote, touch}
+		var upload io.Writer = remote
+		var download io.Writer = local
+		if f.schedule != nil {
+			upload = traffic.Writer{Flow: f.schedule, Writer: remote}
+			download = traffic.Writer{Flow: f.schedule, Down: true, Writer: local}
+		}
 		done := make(chan struct{})
 		go func() {
 			defer close(done)
-			_, err := io.Copy(measuredWriter{remote, &e.up}, local)
+			_, err := io.Copy(measuredWriter{upload, &e.up}, local)
 			remote.CloseWrite()
 			if err != nil {
+				if f.schedule != nil {
+					f.schedule.Close()
+				}
 				f.remote.Close()
 				f.local.Close()
 			}
 		}()
-		_, err := io.Copy(measuredWriter{local, &e.down}, remote)
+		_, err := io.Copy(measuredWriter{download, &e.down}, remote)
 		local.CloseWrite()
 		if err != nil {
+			if f.schedule != nil {
+				f.schedule.Close()
+			}
 			f.remote.Close()
 			f.local.Close()
 		}
@@ -274,11 +308,11 @@ func (e *Engine) HandleTCP(c adapter.TCPConn) {
 	}()
 }
 func (e *Engine) HandleUDP(c adapter.UDPConn) {
-	f := e.begin(c)
+	id := c.ID()
+	f := e.begin(c, id.RemoteAddress.String())
 	if f == nil {
 		return
 	}
-	id := c.ID()
 	go func() {
 		defer e.finish(f)
 		if e.dial(f, 2, id.LocalAddress.String(), id.LocalPort) != nil {
@@ -302,6 +336,11 @@ func (e *Engine) HandleUDP(c adapter.UDPConn) {
 					return
 				}
 				refresh()
+				if f.schedule != nil {
+					if err := f.schedule.Datagram(false, n); err != nil {
+						return
+					}
+				}
 				frame := make([]byte, n+2)
 				binary.BigEndian.PutUint16(frame, uint16(n))
 				copy(frame[2:], buf[:n])
@@ -309,6 +348,9 @@ func (e *Engine) HandleUDP(c adapter.UDPConn) {
 					return
 				}
 				e.up.Add(uint64(n))
+				if f.schedule != nil {
+					f.schedule.Count(false, n)
+				}
 			}
 		}()
 		for {
@@ -325,13 +367,24 @@ func (e *Engine) HandleUDP(c adapter.UDPConn) {
 				break
 			}
 			refresh()
+			if f.schedule != nil {
+				if err := f.schedule.Datagram(true, n); err != nil {
+					break
+				}
+			}
 			if _, err := f.local.Write(data); err != nil {
 				break
 			}
 			e.down.Add(uint64(n))
+			if f.schedule != nil {
+				f.schedule.Count(true, n)
+			}
 		}
 		f.local.Close()
 		f.remote.Close()
+		if f.schedule != nil {
+			f.schedule.Close()
+		}
 		<-done
 	}()
 }

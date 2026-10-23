@@ -7,6 +7,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
+	"github.com/CanKaya4/pdanetnobetci1/host/internal/traffic"
 	"io"
 	"net"
 	"net/http"
@@ -52,6 +53,36 @@ func TestJavaEngineEndToEnd(t *testing.T) {
 		t.Fatal(line)
 	}
 	transport := Transport{Address: fmt.Sprintf("127.0.0.1:%d", port), Token: token}
+	t.Run("AuthenticatedProfileAndTelemetryControl", func(t *testing.T) {
+		c, err := transport.OpenControl(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer c.Close()
+		before, err := c.Status()
+		if err != nil || before.Mode != traffic.Auto || before.Network != "fixture" {
+			t.Fatal(before, err)
+		}
+		if err = c.SetMode(traffic.Streaming); err != nil {
+			t.Fatal(err)
+		}
+		if err = c.Publish(traffic.Snapshot{Active: traffic.Streaming, UploadMbps: 1.25}); err != nil {
+			t.Fatal(err)
+		}
+		after, err := c.Status()
+		if err != nil || after.Mode != traffic.Streaming || after.Revision <= before.Revision || after.HostAgeMs < 0 {
+			t.Fatal(after, err)
+		}
+		if err = c.SetMode("invalid"); err == nil {
+			t.Fatal("invalid remote profile accepted")
+		}
+		bad := transport
+		bad.Token = strings.Repeat("0", 32)
+		if unauthorized, err := bad.OpenControl(ctx); err == nil {
+			unauthorized.Close()
+			t.Fatal("wrong-token control accepted")
+		}
+	})
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)

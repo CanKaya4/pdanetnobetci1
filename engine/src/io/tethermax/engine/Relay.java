@@ -22,6 +22,8 @@ public final class Relay implements AutoCloseable {
     public interface Dialer {
         Socket tcp(String host, int port) throws IOException;
         DatagramFlow udp(String host, int port) throws IOException;
+        default String networkInfo() { return "fixture"; }
+        default void onMode(String mode) { }
     }
     /** Unconnected socket preserves zero-length datagrams on desktop Java as well as Android.
      * Incoming peer validation is performed by the relay before forwarding each reply. */
@@ -41,6 +43,42 @@ public final class Relay implements AutoCloseable {
     private volatile boolean stopped;
     public final AtomicLong uploaded = new AtomicLong();
     public final AtomicLong downloaded = new AtomicLong();
+    private volatile String requestedMode = "auto";
+    private final AtomicLong modeRevision = new AtomicLong(1);
+    public volatile String hostTelemetry;
+    public volatile long hostTelemetryNanos;
+    public String requestedMode() { return requestedMode; }
+    public static boolean validMode(String mode) { return Arrays.asList("auto","gaming","streaming","daily","maximum").contains(mode); }
+    public synchronized boolean setMode(String mode) {
+        if (!validMode(mode)) return false;
+        if (!mode.equals(requestedMode)) { requestedMode=mode;modeRevision.incrementAndGet();dialer.onMode(mode); }
+        return true;
+    }
+    private static String quote(String value) {
+        StringBuilder result=new StringBuilder("\"");
+        for (char c:value.toCharArray()) { if(c=='"'||c=='\\')result.append('\\').append(c);else if(c<32)result.append(String.format(Locale.ROOT,"\\u%04x",(int)c));else result.append(c); }
+        return result.append('"').toString();
+    }
+    public synchronized String controlStatus() {
+        long age=hostTelemetryNanos==0?-1:TimeUnit.NANOSECONDS.toMillis(System.nanoTime()-hostTelemetryNanos);
+        return "{\"mode\":"+quote(requestedMode)+",\"revision\":"+modeRevision.get()+",\"uploaded\":"+uploaded.get()+",\"downloaded\":"+downloaded.get()+",\"network\":"+quote(dialer.networkInfo())+",\"hostAgeMs\":"+age+"}";
+    }
+    private void control(Endpoint endpoint,DataInputStream in,DataOutputStream out) throws IOException {
+        endpoint.setReadTimeout(15000);out.writeByte(0);out.flush();
+        while(!stopped) {
+            int command=in.readUnsignedByte();
+            if(command==1) { byte[] status=controlStatus().getBytes(StandardCharsets.UTF_8);out.writeInt(status.length);out.write(status);out.flush(); }
+            else if(command==2) {
+                int size=in.readUnsignedByte();if(size<1||size>16)throw new IOException("invalid mode length");
+                byte[] bytes=new byte[size];in.readFully(bytes);out.writeByte(setMode(new String(bytes,StandardCharsets.US_ASCII))?0:2);out.flush();
+            } else if(command==3) {
+                int size=in.readUnsignedShort();if(size<2||size>4096)throw new IOException("invalid telemetry length");
+                byte[] bytes=new byte[size];in.readFully(bytes);
+                if(bytes[0]!='{'||bytes[size-1]!='}')throw new IOException("invalid telemetry framing");
+                hostTelemetry=new String(bytes,StandardCharsets.UTF_8);hostTelemetryNanos=System.nanoTime();out.writeByte(0);out.flush();
+            } else throw new IOException("unknown control command");
+        }
+    }
 
     public Relay(Dialer dialer, String token) {
         if (!token.matches("[a-f0-9]{32}")) throw new IllegalArgumentException("32 hex character pairing code required");
@@ -65,12 +103,13 @@ public final class Relay implements AutoCloseable {
         if (!MessageDigest.isEqual(token, received)) { out.writeByte(2); out.flush(); return; }
         int mode = in.readUnsignedByte();
         int length = in.readUnsignedShort();
-        if (length < 1 || length > 253 || (mode != 1 && mode != 2)) { out.writeByte(3); out.flush(); return; }
+        if (length < 1 || length > 253 || (mode != 1 && mode != 2 && mode!=3)) { out.writeByte(3); out.flush(); return; }
         byte[] hostname = new byte[length]; in.readFully(hostname);
         String host = new String(hostname, StandardCharsets.US_ASCII);
         if (!host.matches("[A-Za-z0-9.:%_-]+")) { out.writeByte(3); out.flush(); return; }
         int port = in.readUnsignedShort();
         if (port == 0) { out.writeByte(3); out.flush(); return; }
+        if(mode==3) { if(!host.equals("control")||port!=1){out.writeByte(3);out.flush();return;}control(endpoint,in,out);return; }
         Closeable remote;
         try { remote = mode == 1 ? dialer.tcp(host, port) : dialer.udp(host, port); }
         catch (IOException e) { out.writeByte(1); out.flush(); return; }

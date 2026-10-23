@@ -11,8 +11,16 @@ bağlantısı değildir. [Kurulum](docs/windows-preview-tr.md),
 
 Yeni geliştirme: gVisor tabanlı deneysel IPv4 TCP/UDP paket motoru ve gerçek
 Wintun ring okuma/yazma arka ucu eklendi. Sentetik IP → Java relay testleri geçti.
-Yeni IP yolunun A56 testi ADB `unauthorized` nedeniyle bekliyor; önceki SOCKS
-cihaz testi bu yolun kanıtı değildir. [Kapsam ve doğrulama](docs/ip-engine.md).
+ADB yetkilendirildikten sonra yeni IP yolu Galaxy A56 üzerinde gerçek USB →
+hücresel HTTPS ve UDP DNS testlerini geçti. Sistem rotasını değiştirmeyen özel
+IPv4 testidir; Wintun üzerinden sistem geneli internet doğrulanmış değildir.
+[Kapsam](docs/ip-engine.md), [0.4 trafik motoru ve cihaz kanıtı](docs/traffic-engine.md).
+
+0.4 önizlemesi, gerçek TCP yazma/UDP datagram yoluna akış zamanlama, kullanıcı
+tavanları ve deneysel adaptif hız kontrolü ekler. Beş profil Android/Windows
+arasında kimliği doğrulanmış USB kanalında eşitlenir. Gerçek veri/hız grafikleri
+ve isteğe bağlı hücresel DNS RTT/jitter ölçümü vardır. Oyun gecikmesinde iyileşme
+veya 5G kapasitesi henüz ölçülmedi.
 
 Normal kullanımda Windows uygulamasını açıp **Bağlan** seçilir; PowerShell veya
 uzun gizli kod girişi gerekmez. Aşağıdaki CLI/cloud bölümleri geliştirme içindir.
@@ -29,7 +37,7 @@ Authenticode imzalı değildir. Yeni fiziksel test aşamaları ayrıca onay gere
 
 ## Güvenlik sınırı
 
-Mevcut bilgisayar PdaNet üzerinden internete bağlıdır. PdaNet, MyPublicWiFi,
+Mevcut bilgisayarın çalışan bağlantısı korunur. PdaNet, MyPublicWiFi,
 adaptörler, DNS, rota ve sistem proxy'si değiştirilmeyecek. Kod otomatik ADB,
 sürücü kurulumu veya ağ yapılandırması çalıştırmaz. Windows uygulamasının varsayılanı
 `status` gösterip çıkmaktır. `serve` ayrıca `--approve-usb-test` gerektirir; bu
@@ -79,8 +87,9 @@ bunun gecikme etkisi fiziksel cihazda henüz ölçülmemiştir. Teknik ayrıntı
 [üçüncü taraf bildirimleri](THIRD_PARTY_NOTICES.md).
 
 SOCKS kapsamı dışındaki Windows/oyun/MyPublicWiFi trafiği bu önizlemede aktarılmaz.
-Sistem geneli TUN, otomatik oyun algılama, gerçek adaptif bufferbloat şekillendirmesi,
-MyPublicWiFi akış yönetimi ve A56/Türk Telekom 5G kalibrasyonu sonraki aşamalardır.
+Sistem geneli TUN yönlendirme, MyPublicWiFi/ICS kurulumu ve A56/Türk Telekom 5G
+kalibrasyonu sonraki aşamalardır. Oyun süreç adı algılama ve deneysel adaptif
+zamanlama uygulanmıştır; gerçek oyun/TV yükü altında başarımı doğrulanmamıştır.
 CAKE-autorate veya sqm-autorate'ın Linux kontrol betiklerini Windows'a kopyalamak
 bu özellikleri sağlamaz. Motor fiziksel olarak doğrulanmadan optimizasyon sonuçları
 iddia edilmeyecektir.

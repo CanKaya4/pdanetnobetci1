@@ -49,6 +49,7 @@ func runIP(args []string, framed bool) error {
 	mtu := flags.Uint("mtu", 1500, "IPv4 link MTU")
 	dll := flags.String("wintun-dll", "", "absolute path to verified Wintun DLL")
 	journal := flags.String("journal", "", "new ownership journal path (required for native adapter mode)")
+	qos := addTrafficFlags(flags)
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
@@ -61,6 +62,18 @@ func runIP(args []string, framed bool) error {
 	if !*usbApproved {
 		return errors.New("IP transport use requires explicit USB test approval")
 	}
+	if *qos.control {
+		return errors.New("IP IPC reserves stdin for packets or heartbeat; use initial profile flags")
+	}
+	prefixes, err := qos.prefixes()
+	if err != nil {
+		return err
+	}
+	manager, err := qos.manager()
+	if err != nil {
+		return err
+	}
+	defer manager.Close()
 	if !framed && (*journal == "" || !filepath.IsAbs(*journal) || !filepath.IsAbs(*dll)) {
 		return errors.New("native IP worker requires absolute DLL and new journal paths")
 	}
@@ -71,7 +84,8 @@ func runIP(args []string, framed bool) error {
 	if err != nil {
 		return err
 	}
-	e, err := ipengine.New(ipengine.Config{Transport: bridge.Transport{Address: *transport, Token: secret}, MTU: uint32(*mtu)})
+	link := bridge.Transport{Address: *transport, Token: secret}
+	e, err := ipengine.New(ipengine.Config{Transport: link, MTU: uint32(*mtu), Traffic: manager, SharedClients: prefixes})
 	secret = ""
 	if err != nil {
 		return err
@@ -79,6 +93,15 @@ func runIP(args []string, framed bool) error {
 	defer e.Close()
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer cancel()
+	var output io.Writer
+	if *qos.telemetry {
+		output = os.Stdout
+		if framed {
+			output = os.Stderr
+		}
+	}
+	stop := startTrafficRuntime(ctx, cancel, qos, manager, link, os.Stdin, output)
+	defer stop()
 	if framed {
 		return e.Run(ctx, &ipengine.FramedDevice{Stream: &stdioStream{input: os.Stdin, output: os.Stdout}})
 	}

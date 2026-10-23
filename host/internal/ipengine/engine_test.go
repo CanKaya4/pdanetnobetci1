@@ -9,6 +9,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"github.com/CanKaya4/pdanetnobetci1/host/internal/bridge"
+	"github.com/CanKaya4/pdanetnobetci1/host/internal/traffic"
 	"gvisor.dev/gvisor/pkg/buffer"
 	"gvisor.dev/gvisor/pkg/tcpip"
 	"gvisor.dev/gvisor/pkg/tcpip/adapters/gonet"
@@ -20,6 +21,7 @@ import (
 	"gvisor.dev/gvisor/pkg/tcpip/transport/udp"
 	"io"
 	"net"
+	"net/netip"
 	"os"
 	"os/exec"
 	"strconv"
@@ -145,7 +147,12 @@ func target(t *testing.T, a net.Addr) tcpip.FullAddress {
 }
 func TestIPStackJavaTCPUDP(t *testing.T) {
 	transport := fixture(t)
-	e, err := New(Config{Transport: mappedTransport{transport}, MTU: 1280, UDPIdle: time.Second})
+	policy, err := traffic.New(traffic.Settings{Mode: traffic.Gaming, UploadMbps: 25, DownloadMbps: 25})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(policy.Close)
+	e, err := New(Config{Transport: mappedTransport{transport}, MTU: 1280, UDPIdle: time.Second, Traffic: policy, SharedClients: []netip.Prefix{netip.MustParsePrefix("10.77.0.0/24")}})
 	if err != nil {
 		t.Fatal(err)
 	}

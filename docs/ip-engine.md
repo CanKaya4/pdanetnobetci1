@@ -113,20 +113,22 @@ observed HTTP result, DNS query durations and actual payload counters; it does
 not call those DNS durations unloaded network RTT or infer sustained speed/loss.
 The bounded test neither loads Wintun nor configures Windows networking.
 
-This new IP path was NOT tested on the Galaxy A56: ADB reports `unauthorized`,
-and the user reports that no RSA authorization prompt is visible. Debugging
-being enabled is distinct from authorizing this PC. No ADB reset, USB mode change,
-permission revocation, phone reboot or unplug was attempted. Previous successful
-SOCKS HTTPS/DNS hardware results do not verify this new IP path.
+The initial `unauthorized` blocker was resolved by the user. The new memory-IP
+path then passed on Galaxy A56 / Android 16 over authenticated USB and actual
+cellular-bound sockets. HTTPS returned 200 and all five UDP DNS queries returned
+validated answers. A controlled removal of only the test's own ADB data forward
+was detected; secure reconnection and a repeat IP check passed. This was not a
+physical cable-unplug test. See [traffic engine evidence](traffic-engine.md).
 
-Still required: this phone probe, approved native ring packet tests on an isolated
+Still required: approved native ring packet tests on an isolated
 host, physical crash/unplug/recovery evidence, independently recoverable scoped
 IP/route ownership controller, route/DNS safety dry-runs and an exact separate
 real-route approval plan. There is no ready global-route switch to enable.
-Adaptive shaping, fair packet scheduler, game/process classification, five active
-profiles, MyPublicWiFi/ICS forwarding and detailed latency analysis remain
-unimplemented. UI does not present them as working. Hardware engine verification
-precedes performance optimization, per repository instructions.
+Per-flow byte scheduling/pacing, experimental adaptive control, process-name
+detection, five active profiles and actual measured charts are now integrated in
+the SOCKS and IPv4 paths. MyPublicWiFi/ICS forwarding and route ownership remain
+unfinished. The native worker accepts initial profile flags; its private stdin
+is reserved for heartbeat, so live profile commands are not accepted there yet.
 
 No carrier quota bypass or hotspot-off independence is certified. The relay uses
 Android cellular-bound sockets without PdaNet, but operator accounting remains

@@ -9,6 +9,8 @@ import android.graphics.drawable.GradientDrawable;
 import android.os.*;
 import android.view.*;
 import android.widget.*;
+import org.json.*;
+import io.tethermax.engine.Relay;
 
 public final class MainActivity extends Activity {
     private final Handler handler = new Handler(Looper.getMainLooper());
@@ -18,11 +20,17 @@ public final class MainActivity extends Activity {
     private String shownCode;
     private TextView traffic;
     private AlertDialog pairingDialog;
+    private TrafficPlot speedPlot,delayPlot;
+    private Spinner profile;
+    private static final String[] MODE_IDS={"auto","gaming","streaming","daily","maximum"};
+    private static final String[] MODE_LABELS={"Otomatik","Oyun","Film / Dizi","Günlük","Maksimum Hız"};
+    private TunnelService sampledService;
+    private long sampleAt,lastUp,lastDown;
     private final Runnable refresh = new Runnable() {
         public void run() {
             status.setText(TunnelService.status);
             TunnelService current=TunnelService.instance;
-            if (traffic != null) traffic.setText(TunnelService.networkInfo + "\nOturum yükleme: " + (current==null?0:current.uploaded()) + " bayt\nOturum indirme: " + (current==null?0:current.downloaded()) + " bayt\nUygulama aktarım sayacı; operatör faturalandırma sayacı değildir.");
+            refreshTraffic(current);
             String code = UsbPairing.pendingCode;
             if (code == null) { shownCode = null; if (pairingDialog != null) { pairingDialog.dismiss(); pairingDialog = null; } }
             if (code != null && !code.equals(shownCode)) {
@@ -37,6 +45,29 @@ public final class MainActivity extends Activity {
             handler.postDelayed(this, 1000);
         }
     };
+    private void refreshTraffic(TunnelService current) {
+        long now=SystemClock.elapsedRealtime(),up=current==null?0:current.uploaded(),down=current==null?0:current.downloaded();
+        float upload=Float.NaN,download=Float.NaN,rtt=Float.NaN,jitter=Float.NaN;
+        if(current!=null&&current==sampledService&&now>sampleAt&&up>=lastUp&&down>=lastDown){upload=(up-lastUp)*8f/1000f/(now-sampleAt);download=(down-lastDown)*8f/1000f/(now-sampleAt);}
+        sampledService=current;sampleAt=now;lastUp=up;lastDown=down;
+        String details="Windows politika onayı / gecikme ölçümü bekleniyor";
+        Relay relay=current==null?null:current.currentRelay();
+        if(relay!=null){
+            for(int i=0;i<MODE_IDS.length;i++)if(MODE_IDS[i].equals(relay.requestedMode())&&profile.getSelectedItemPosition()!=i)profile.setSelection(i);
+            if(relay.hostTelemetry!=null&&System.nanoTime()-relay.hostTelemetryNanos<5000000000L){
+                try {
+                    JSONObject value=new JSONObject(relay.hostTelemetry);
+                    String active=value.optString("active","?");
+                    details="Windows'ta etkin profil: "+modeLabel(active)+"\nAkış: "+value.optInt("ActiveFlows")+" · Kuyruk P95: "+value.optDouble("QueueP95Ms",0)+" ms";
+                    if(!value.isNull("QueryRTTMs")){rtt=(float)value.getDouble("QueryRTTMs");if(!value.isNull("JitterMs"))jitter=(float)value.getDouble("JitterMs");details+="\nDNS gidiş-dönüş: "+rtt+" ms · Jitter: "+(Float.isNaN(jitter)?"—":Float.toString(jitter))+" ms";}
+                    if(!value.isNull("ProbeLossPercent"))details+="\nDNS yanıtsız örnekler: %"+value.getDouble("ProbeLossPercent")+" / "+value.optInt("ProbeSamples")+" örnek";
+                }catch(JSONException ignored){details="Windows ölçüm kaydı okunamadı";}
+            }
+        }
+        if(traffic!=null)traffic.setText(TunnelService.networkInfo+"\nYükleme: "+up+" B · İndirme: "+down+" B\n"+(Float.isNaN(upload)?"Hız örneği bekleniyor":String.format(java.util.Locale.ROOT,"İndirme %.3f / Yükleme %.3f Mbps",download,upload))+"\n"+details+"\nAktarılan uygulama verisi; operatör faturalandırması değildir.");
+        if(speedPlot!=null)speedPlot.add(download,upload);if(delayPlot!=null)delayPlot.add(rtt,jitter);
+    }
+    private static String modeLabel(String id) { for(int i=0;i<MODE_IDS.length;i++)if(MODE_IDS[i].equals(id))return MODE_LABELS[i];return "Bilinmiyor"; }
     private int dp(int value) { return Math.round(value * getResources().getDisplayMetrics().density); }
     private TextView text(String value, int size, int color) {
         TextView view = new TextView(this); view.setText(value); view.setTextSize(size); view.setTextColor(color);
@@ -76,10 +107,19 @@ public final class MainActivity extends Activity {
         action(pairing, "Güvenilen bilgisayarları unut", () -> new AlertDialog.Builder(this).setTitle("Eşleştirmeler silinsin mi?").setMessage("Motor duracak; bilgisayarlara yeniden güven onayı gerekecek.").setPositiveButton("Unut", (d,w) -> { stopService(new Intent(this,TunnelService.class)); UsbPairing.forget(this); }).setNegativeButton("Vazgeç",null).show());
         LinearLayout analysis = card("İNTERNET ANALİZİ");
         traffic = text("Henüz trafik yok", 18, ink); analysis.addView(traffic);
-        analysis.addView(text("Hız, RTT ve paket kaybı henüz ölçülmedi. Bu ekran mobil veri tüketen bir test başlatmaz.", 14, muted));
+        speedPlot=new TrafficPlot(this,"Mbps",muted);analysis.addView(speedPlot,new LinearLayout.LayoutParams(-1,dp(140)));
+        analysis.addView(text("Mavi indirme · yeşil yükleme. Son 60 gerçek örnek.",12,muted));
+        delayPlot=new TrafficPlot(this,"ms",muted);analysis.addView(delayPlot,new LinearLayout.LayoutParams(-1,dp(140)));
+        analysis.addView(text("Mavi DNS gidiş-dönüş · yeşil jitter. Ölçüm yoksa grafik boş kalır. Adaptif ölçüm Windows'tan açılır; mobil veri kullanır.",12,muted));
+        LinearLayout modes=card("TRAFİK PROFİLİ");
+        profile=new Spinner(this);profile.setAdapter(new ArrayAdapter<String>(this,android.R.layout.simple_spinner_dropdown_item,MODE_LABELS));
+        String savedMode=TunnelService.savedMode(this);for(int i=0;i<MODE_IDS.length;i++)if(MODE_IDS[i].equals(savedMode))profile.setSelection(i);
+        modes.addView(profile);
+        profile.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener(){public void onNothingSelected(AdapterView<?> parent){}public void onItemSelected(AdapterView<?> parent,View view,int position,long id){TunnelService.requestMode(MainActivity.this,MODE_IDS[position]);}});
+        modes.addView(text("Windows bağlandığında seçim aynı USB motorunun zamanlayıcısına iletilir. Manuel seçim otomatik oyun algılamasıyla değiştirilmez. Sistem geneli yönlendirme açılmaz.",14,muted));
         LinearLayout scope = card("BU SÜRÜMÜN KAPSAMI");
         scope.addView(text("TCP / UDP aktarım motoru", 20, ink));
-        scope.addView(text("Windows SOCKS istemcisi gerekir. Sistem geneli internet, oyun/film profilleri ve adaptif trafik yönetimi henüz uygulanmadı.", 14, muted));
+        scope.addView(text("Windows'tan TetherMax'e gönderilen TCP/UDP akışları taşınır. Deneysel akış önceliği ve hız tavanı vardır; oyun gecikmesi iyileşmesi henüz kanıtlanmadı. Sistem geneli rota ve MyPublicWiFi aktarımı ayrı doğrulama bekliyor.", 14, muted));
         setContentView(scroll);
     }
     private void error(String message) { new AlertDialog.Builder(this).setTitle("İşlem tamamlanamadı").setMessage(message).setPositiveButton("Tamam", null).show(); }

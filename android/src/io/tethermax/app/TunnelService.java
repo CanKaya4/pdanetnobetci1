@@ -15,6 +15,13 @@ public final class TunnelService extends Service {
     public static volatile String networkInfo = "Hücresel ağ henüz seçilmedi";
     public long uploaded() { Relay r=relay; return r==null?0:r.uploaded.get(); }
     public long downloaded() { Relay r=relay; return r==null?0:r.downloaded.get(); }
+    public Relay currentRelay() { return relay; }
+    public static String savedMode(Context context) { return context.getSharedPreferences("traffic",MODE_PRIVATE).getString("mode","auto"); }
+    public static void requestMode(Context context,String mode) {
+        if(!Relay.validMode(mode))return;
+        context.getSharedPreferences("traffic",MODE_PRIVATE).edit().putString("mode",mode).apply();
+        TunnelService current=instance;if(current!=null&&current.relay!=null)current.relay.setMode(mode);
+    }
     private final ExecutorService acceptor = Executors.newSingleThreadExecutor();
     private volatile Network cellular;
     private volatile Relay relay;
@@ -47,7 +54,12 @@ public final class TunnelService extends Service {
             try { code = PairingStore.get(this); }
             catch (Exception e) { throw new IOException("Pairing storage unavailable", e); }
             relay = new Relay(new Relay.Dialer() {
-                private Network network() throws IOException { Network n = cellular; if (n == null) throw new IOException("cellular unavailable"); return n; }
+                private Network network() throws IOException { Network n = cellular; NetworkCapabilities caps=n==null?null:manager.getNetworkCapabilities(n); if (n == null||caps==null||!caps.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR)) throw new IOException("cellular unavailable"); return n; }
+                public String networkInfo() {
+                    try { Network n=network();LinkProperties properties=manager.getLinkProperties(n);return "CELLULAR Network "+n.toString()+" / "+(properties==null?"unknown":properties.getInterfaceName()); }
+                    catch(IOException e){return "UNAVAILABLE";}
+                }
+                public void onMode(String mode) { getSharedPreferences("traffic",MODE_PRIVATE).edit().putString("mode",mode).apply(); }
                 public Socket tcp(String host, int port) throws IOException {
                     Network n = network(); InetAddress[] addresses = n.getAllByName(host); IOException last = null;
                     for (InetAddress address : addresses) {
@@ -64,6 +76,7 @@ public final class TunnelService extends Service {
                     catch (IOException | RuntimeException e) { s.close(); throw e; }
                 }
             }, code);
+            relay.setMode(savedMode(this));
             listener = new LocalServerSocket("io.tethermax.usb.v1");
             pairing = new UsbPairing(this);
             acceptor.execute(() -> {
@@ -83,7 +96,9 @@ public final class TunnelService extends Service {
             status = "Hücresel bağlantı bekleniyor";
         } catch (IOException | RuntimeException e) { status = "Motor başlatılamadı: " + e.getClass().getSimpleName(); stopSelf(); }
     }
-    @Override public int onStartCommand(Intent intent, int flags, int startId) { return START_NOT_STICKY; }
+    // Recover an already user-started foreground session when Android permits it.
+    // There is no boot receiver; force-stop and platform battery policy still apply.
+    @Override public int onStartCommand(Intent intent, int flags, int startId) { return START_STICKY; }
     @Override public void onDestroy() {
         stopping = true;
         instance = null;

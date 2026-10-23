@@ -10,7 +10,7 @@ ns='http://wixtoolset.org/schemas/v4/wxs'
 ET.register_namespace('',ns)
 def add(parent,tag,**attrs): return ET.SubElement(parent,'{'+ns+'}'+tag,attrs)
 wix=ET.Element('{'+ns+'}Wix')
-pkg=add(wix,'Package',Name='TetherMax USB Preview',Manufacturer='TetherMax',Version='0.3.0',UpgradeCode='B1E69BC8-E38E-47FC-9C33-11E7C7FD6582',Scope='perUser',Language='1055')
+pkg=add(wix,'Package',Name='TetherMax USB Preview',Manufacturer='TetherMax',Version='0.4.0',UpgradeCode='B1E69BC8-E38E-47FC-9C33-11E7C7FD6582',Scope='perUser',Language='1055')
 add(pkg,'MajorUpgrade',DowngradeErrorMessage='A newer TetherMax preview is already installed.')
 add(pkg,'MediaTemplate',EmbedCab='yes')
 local=add(pkg,'StandardDirectory',Id='LocalAppDataFolder')

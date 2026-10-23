@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bufio"
 	"context"
 	"flag"
 	"fmt"
@@ -10,7 +9,6 @@ import (
 	"net"
 	"os"
 	"os/signal"
-	"strings"
 )
 
 func run(args []string) error {
@@ -24,7 +22,7 @@ func run(args []string) error {
 		return runIP(args[1:], false)
 	}
 	if len(args) == 0 || args[0] == "status" {
-		fmt.Println("TetherMax 0.1.0-engine: inactive. No adapter, route, DNS, PdaNet or MyPublicWiFi changes. USB SOCKS and experimental IPv4 TCP/UDP netstack available; system-wide routing and adaptive QoS are not implemented.")
+		fmt.Println("TetherMax 0.4.0-engine: inactive. No adapter, route, DNS, PdaNet or MyPublicWiFi changes. USB SOCKS, IPv4 netstack and experimental flow pacing available; system-wide routing is not enabled.")
 		return nil
 	}
 	if args[0] != "serve" {
@@ -35,6 +33,7 @@ func run(args []string) error {
 	stdinPairing := flags.Bool("pairing-stdin", false, "read pairing secret from inherited private stdin pipe")
 	address := flags.String("transport", "127.0.0.1:38473", "existing ADB forward endpoint")
 	listen := flags.String("listen", "127.0.0.1:1088", "loopback SOCKS5 address")
+	qos := addTrafficFlags(flags)
 	if err := flags.Parse(args[1:]); err != nil {
 		return err
 	}
@@ -44,16 +43,24 @@ func run(args []string) error {
 	if !*approved {
 		return fmt.Errorf("physical testing requires separate approval; pass --approve-usb-test only after obtaining it")
 	}
+	if *qos.control && !*stdinPairing {
+		return fmt.Errorf("live traffic control requires the inherited private pairing pipe")
+	}
+	manager, err := qos.manager()
+	if err != nil {
+		return err
+	}
+	defer manager.Close()
 	if err := bridge.LoopbackAddress(*listen); err != nil {
 		return err
 	}
 	token := os.Getenv("TETHERMAX_PAIRING_CODE")
 	if *stdinPairing {
-		line, err := bufio.NewReaderSize(io.LimitReader(os.Stdin, 34), 64).ReadString('\n')
-		if err != nil || len(line) != 33 {
+		secret, err := readPrivateSecret(os.Stdin)
+		if err != nil {
 			return fmt.Errorf("invalid pairing input")
 		}
-		token = strings.TrimSuffix(line, "\n")
+		token = secret
 	}
 	transport := bridge.Transport{Address: *address, Token: token}
 	if err := transport.Validate(); err != nil {
@@ -67,7 +74,13 @@ func run(args []string) error {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer cancel()
 	fmt.Printf("Loopback SOCKS5 listening at %s. No OS network configuration changed.\n", listener.Addr())
-	return (bridge.Server{Transport: transport}).Serve(ctx, listener)
+	var output io.Writer
+	if *qos.telemetry || *qos.control {
+		output = os.Stdout
+	}
+	stop := startTrafficRuntime(ctx, cancel, qos, manager, transport, os.Stdin, output)
+	defer stop()
+	return (bridge.Server{Transport: transport, Traffic: manager}).Serve(ctx, listener)
 }
 func main() {
 	if err := run(os.Args[1:]); err != nil {

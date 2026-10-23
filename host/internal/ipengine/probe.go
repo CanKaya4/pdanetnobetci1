@@ -8,6 +8,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"github.com/CanKaya4/pdanetnobetci1/host/internal/bridge"
+	"github.com/CanKaya4/pdanetnobetci1/host/internal/traffic"
 	"gvisor.dev/gvisor/pkg/buffer"
 	"gvisor.dev/gvisor/pkg/tcpip"
 	"gvisor.dev/gvisor/pkg/tcpip/adapters/gonet"
@@ -20,6 +21,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 )
@@ -33,13 +35,19 @@ type IPProbe struct {
 	Errors            []string
 	Passed            bool
 	Scope             string
+	PhoneNetwork      string
+	Traffic           *traffic.Snapshot
 }
 
 // ProbeUSB uses two memory-only IP NICs. Only bridge.Transport opens an OS TCP
 // connection, to the already approved localhost ADB endpoint. No Wintun is loaded.
-func ProbeUSB(ctx context.Context, transport bridge.Transport) IPProbe {
+func ProbeUSB(ctx context.Context, transport bridge.Transport, policies ...*traffic.Manager) IPProbe {
 	result := IPProbe{Scope: "in-memory IPv4 -> authenticated USB relay -> cellular sockets; no OS route/DNS/adapter change"}
-	e, err := New(Config{Transport: transport, MTU: 1280})
+	var policy *traffic.Manager
+	if len(policies) > 0 {
+		policy = policies[0]
+	}
+	e, err := New(Config{Transport: transport, MTU: 1280, Traffic: policy})
 	if err != nil {
 		result.Errors = append(result.Errors, err.Error())
 		return result
@@ -156,11 +164,30 @@ func ProbeUSB(ctx context.Context, transport bridge.Transport) IPProbe {
 			} else {
 				result.DNSMilliseconds = append(result.DNSMilliseconds, float64(time.Since(start).Microseconds())/1000)
 			}
+			if policy != nil {
+				policy.Observe(time.Now(), time.Since(start), err == nil)
+			}
 		}
 		dns.Close()
 	}
 	e.Close()
 	result.Counters = e.Counters()
-	result.Passed = result.HTTPStatus == 200 && len(result.DNSMilliseconds) == 5 && len(result.Errors) == 0
+	control, controlErr := transport.OpenControl(ctx)
+	if controlErr == nil {
+		status, statusErr := control.Status()
+		control.Close()
+		controlErr = statusErr
+		if statusErr == nil {
+			result.PhoneNetwork = status.Network
+		}
+	}
+	if controlErr != nil {
+		result.Errors = append(result.Errors, "cellular source attestation unavailable")
+	}
+	if policy != nil {
+		s := policy.Snapshot()
+		result.Traffic = &s
+	}
+	result.Passed = result.HTTPStatus == 200 && len(result.DNSMilliseconds) == 5 && len(result.Errors) == 0 && strings.HasPrefix(result.PhoneNetwork, "CELLULAR ")
 	return result
 }

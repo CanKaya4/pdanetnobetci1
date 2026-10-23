@@ -49,10 +49,16 @@ func (t Transport) Dial(mode byte, host string, port uint16) (net.Conn, error) {
 }
 
 func (t Transport) DialContext(ctx context.Context, mode byte, host string, port uint16) (net.Conn, error) {
+	if mode != 1 && mode != 2 {
+		return nil, errors.New("invalid flow mode")
+	}
+	return t.dialContext(ctx, mode, host, port)
+}
+func (t Transport) dialContext(ctx context.Context, mode byte, host string, port uint16) (net.Conn, error) {
 	if err := t.Validate(); err != nil {
 		return nil, err
 	}
-	if (mode != 1 && mode != 2) || len(host) < 1 || len(host) > 253 || port == 0 {
+	if (mode != 1 && mode != 2 && mode != 3) || len(host) < 1 || len(host) > 253 || port == 0 {
 		return nil, errors.New("invalid target")
 	}
 	for _, c := range host {

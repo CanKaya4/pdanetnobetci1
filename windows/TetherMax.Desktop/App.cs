@@ -7,6 +7,8 @@ using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Media;
 using System.Windows.Threading;
+using System.Text.Json;
+using System.Globalization;
 
 namespace TetherMax;
 internal sealed class App : Application
@@ -19,6 +21,7 @@ internal sealed class Dashboard : Window
     readonly TextBlock state = new() { Text="Bağlantı kapalı",FontSize=24,Foreground=Brushes.White,Margin=new Thickness(0,10,0,10) };
     readonly TextBox log = new() { IsReadOnly=true,AcceptsReturn=true,TextWrapping=TextWrapping.Wrap,VerticalScrollBarVisibility=ScrollBarVisibility.Auto,Height=220,Background=new SolidColorBrush(Color.FromRgb(16,24,39)),Foreground=Brushes.LightGray,BorderThickness=new Thickness(0) };
     readonly CheckBox reconnect = new() { Content="USB yeniden geldiğinde bağlan",Foreground=Brushes.White,Margin=new Thickness(0,12,0,12) };
+    readonly TrafficPanel trafficPanel=new();
     Process? engine; CancellationTokenSource? session; bool busy, closing, refreshing; string? selectedSerial; string? pairForward, dataForward;
     int socksPort=1088;
     readonly DispatcherTimer timer = new() { Interval=TimeSpan.FromSeconds(5) };
@@ -28,7 +31,7 @@ internal sealed class Dashboard : Window
     string EnginePath => Path.Combine(root,"tethermax-engine.exe");
     public Dashboard()
     {
-        Title="TetherMax · USB bağlantısı"; Width=880;Height=800;MinWidth=680;MinHeight=650;
+        Title="TetherMax · USB bağlantısı"; Width=960;Height=900;MinWidth=760;MinHeight=650;
         Background=new SolidColorBrush(Color.FromRgb(16,24,39));
         var panel=new StackPanel { Margin=new Thickness(32) }; Content=new ScrollViewer { Content=panel };
         panel.Children.Add(new TextBlock{Text="TetherMax",FontSize=36,FontWeight=FontWeights.Bold,Foreground=Brushes.White});
@@ -42,25 +45,27 @@ internal sealed class Dashboard : Window
         Button(actions,"Eşleştirmeyi unut",async()=>{await Disconnect();if(devices.SelectedItem is Device d){Pairing.Forget(d.Serial);Note("Windows eşleştirmesi silindi. Telefonda da Güvenilen bilgisayarları unut seçeneğini kullanın.");}});
         panel.Children.Add(reconnect);
         try {
-            if(File.Exists(SettingsPath)) { var saved=System.Text.Json.JsonSerializer.Deserialize<Preferences>(File.ReadAllText(SettingsPath));selectedSerial=saved?.Serial;reconnect.IsChecked=saved?.Reconnect==true; }
+            if(File.Exists(SettingsPath)) { var saved=System.Text.Json.JsonSerializer.Deserialize<Preferences>(File.ReadAllText(SettingsPath));selectedSerial=saved?.Serial;reconnect.IsChecked=saved?.Reconnect==true;trafficPanel.Load(saved?.Traffic??new()); }
         } catch { Note("Tercihler okunamadı; otomatik bağlantı kapalı tutuldu."); }
         reconnect.Checked+=(_,_)=>SavePreferences();reconnect.Unchecked+=(_,_)=>SavePreferences();
         panel.Children.Add(new TextBlock{Text="Yalnızca localhost SOCKS · Windows varsayılan interneti değiştirilmez",Foreground=Brushes.LightGray,TextWrapping=TextWrapping.Wrap,Margin=new Thickness(0,12,0,20)});
-        var info=new TextBlock{Text="Profiller / sistem geneli internet\nHenüz uygulanmadı. Oyun, film ve adaptif şekillendirme etkin değildir.\n\nAnaliz\nTest başlatılmadı; hız veya gecikme sonucu yok. İnternet testi küçük miktarda mobil veri kullanır.",Foreground=Brushes.LightGray,TextWrapping=TextWrapping.Wrap,FontSize=15,Margin=new Thickness(0,0,0,20)};panel.Children.Add(info);
+        trafficPanel.ApplySettings=async settings=>{if(engine!=null&&!engine.HasExited){await engine.StandardInput.WriteLineAsync(JsonSerializer.Serialize(settings));await engine.StandardInput.FlushAsync();}SavePreferences(settings);};
+        panel.Children.Add(trafficPanel);
+        panel.Children.Add(new TextBlock{Text="Deneysel akış zamanlama · Sistem geneli yönlendirme ve MyPublicWiFi ağ kurulumu kapalıdır. Oyun gecikmesinde iyileşme henüz ölçülmedi.",Foreground=Brushes.LightGray,TextWrapping=TextWrapping.Wrap,Margin=new Thickness(0,0,0,16)});
         panel.Children.Add(new TextBlock{Text="TANILAMA",Foreground=Brushes.MediumAquamarine,Margin=new Thickness(0,0,0,8)});panel.Children.Add(log);
         Loaded+=async(_,_)=>{await Refresh();timer.Start();};
         timer.Tick+=async(_,_)=>{if(busy||closing)return;await Refresh();if(engine?.HasExited==true){Note("Motor durdu.");await Disconnect();}if(reconnect.IsChecked==true&&engine==null&&selectedSerial!=null&&devices.Items.Cast<Device>().Any(d=>d.Serial==selectedSerial))await Connect();};
         Closing+=async(_,e)=>{if(closing)return;e.Cancel=true;closing=true;timer.Stop();await Disconnect();Close();};
     }
     sealed record Device(string Serial,string Model) { public override string ToString()=>Model+" · "+Serial; }
-    sealed record Preferences(string? Serial,bool Reconnect);
-    void SavePreferences(){try{Directory.CreateDirectory(Path.GetDirectoryName(SettingsPath)!);File.WriteAllText(SettingsPath,System.Text.Json.JsonSerializer.Serialize(new Preferences(selectedSerial,reconnect.IsChecked==true)));}catch{Note("Tercihler kaydedilemedi.");}}
+    sealed record Preferences(string? Serial,bool Reconnect,TrafficSettings? Traffic=null);
+    void SavePreferences(TrafficSettings? settings=null){try{Directory.CreateDirectory(Path.GetDirectoryName(SettingsPath)!);File.WriteAllText(SettingsPath,System.Text.Json.JsonSerializer.Serialize(new Preferences(selectedSerial,reconnect.IsChecked==true,settings??trafficPanel.Settings)));}catch{Note("Tercihler kaydedilemedi.");}}
     void Button(Panel parent,string label,Func<Task> handler)
     {
         var button=new Button{Content=label,Padding=new Thickness(16,10,16,10),Margin=new Thickness(0,0,8,8)};
         button.Click+=async(_,_)=>{try{await handler();}catch(Exception ex){Note(ex.Message);}};parent.Children.Add(button);
     }
-    void Note(string message){log.AppendText(DateTime.Now.ToString("HH:mm:ss")+"  "+message+Environment.NewLine);log.ScrollToEnd();}
+    void Note(string message){log.AppendText(DateTime.Now.ToString("HH:mm:ss")+"  "+message+Environment.NewLine);if(log.Text.Length>65536)log.Text=log.Text[^49152..];log.ScrollToEnd();}
     async Task<string> Adb(params string[] arguments)
     {
         if(!File.Exists(adb))throw new IOException("Resmî Android SDK platform-tools bulunamadı. Mevcut ADB kurulumuna müdahale edilmedi.");
@@ -128,7 +133,10 @@ internal sealed class Dashboard : Window
             socksPort=System.Net.NetworkInformation.IPGlobalProperties.GetIPGlobalProperties().GetActiveTcpListeners().Any(p=>p.Port==1088)?FreePort():1088;
             var start=new ProcessStartInfo(EnginePath){UseShellExecute=false,CreateNoWindow=true,RedirectStandardInput=true,RedirectStandardOutput=true,RedirectStandardError=true};
             foreach(var arg in new[]{"serve","--approve-usb-test","--pairing-stdin","--transport","127.0.0.1:"+dataPort,"--listen","127.0.0.1:"+socksPort})start.ArgumentList.Add(arg);
-            engine=Process.Start(start)??throw new IOException("Go motoru başlatılamadı.");engine.StandardInput.NewLine="\n";await engine.StandardInput.WriteLineAsync(secret);engine.StandardInput.Close();secret="";
+            foreach(var arg in new[]{"--traffic-control-stdin","--traffic-telemetry","--profile",trafficPanel.Settings.Mode,"--upload-mbps",trafficPanel.Settings.UploadMbps.ToString(CultureInfo.InvariantCulture),"--download-mbps",trafficPanel.Settings.DownloadMbps.ToString(CultureInfo.InvariantCulture)})start.ArgumentList.Add(arg);
+            if(trafficPanel.Settings.Adaptive)start.ArgumentList.Add("--adaptive");
+            engine=Process.Start(start)??throw new IOException("Go motoru başlatılamadı.");engine.StandardInput.NewLine="\n";await engine.StandardInput.WriteLineAsync(secret);await engine.StandardInput.FlushAsync();secret="";
+            _=ReadTelemetry(engine);
             await Task.Delay(250);if(engine.HasExited)throw new IOException("Motor başlatılamadı: "+await engine.StandardError.ReadToEndAsync());
             state.Text="USB eşleşti · SOCKS hazır";Note("127.0.0.1:"+socksPort+" hazır. İnternet testi ile veri yolunu doğrulayın. Sistem geneli yönlendirme kapalı.");
         }catch(Exception ex){await Disconnect();Note("Bağlantı: "+ex.Message);}
@@ -140,6 +148,11 @@ internal sealed class Dashboard : Window
         if(engine!=null){try{if(!engine.HasExited){engine.Kill();await engine.WaitForExitAsync();}}catch{}engine.Dispose();engine=null;}
         if(selectedSerial!=null)foreach(var endpoint in new[]{pairForward,dataForward})if(endpoint!=null)try{await Adb("-s",selectedSerial,"forward","--remove",endpoint);}catch(Exception ex){Note("Forward temizliği: "+ex.Message);}
         pairForward=null;dataForward=null;state.Text="Bağlantı kapalı";
+        trafficPanel.Reset();
+    }
+    async Task ReadTelemetry(Process process)
+    {
+        try{while(await process.StandardOutput.ReadLineAsync() is string line){if(!ReferenceEquals(engine,process))return;try{using var data=JsonDocument.Parse(line);var value=data.RootElement;if(!value.TryGetProperty("type",out var kind))continue;if(kind.GetString()=="traffic"){string previous=trafficPanel.Settings.Mode;trafficPanel.Accept(value);if(previous!=trafficPanel.Settings.Mode)SavePreferences();}else if(kind.GetString()=="traffic-error")Note("Trafik ayarı: "+value.GetProperty("message").GetString());}catch(JsonException){}}}catch(Exception ex){if(ReferenceEquals(engine,process)&&!closing)Note("Telemetri: "+ex.Message);}
     }
     async Task Diagnose()
     {
@@ -168,6 +181,8 @@ internal sealed class Dashboard : Window
             string secret=await Pairing.Connect(int.Parse(pairForward[4..]),selectedSerial,code=>Dispatcher.InvokeAsync(()=>MessageBox.Show(this,"Telefondaki kısa numara aynı mı?\n"+code,"Güvenli eşleştirme",MessageBoxButton.YesNo)==MessageBoxResult.Yes).Task,timeout.Token);
             var start=new ProcessStartInfo(EnginePath){UseShellExecute=false,CreateNoWindow=true,RedirectStandardInput=true,RedirectStandardOutput=true,RedirectStandardError=true,StandardOutputEncoding=Encoding.UTF8,StandardErrorEncoding=Encoding.UTF8};
             foreach(var arg in new[]{"ip-check","--approve-usb-test","--transport","127.0.0.1:"+dataForward[4..]})start.ArgumentList.Add(arg);
+            foreach(var arg in new[]{"--profile",trafficPanel.Settings.Mode,"--upload-mbps",trafficPanel.Settings.UploadMbps.ToString(CultureInfo.InvariantCulture),"--download-mbps",trafficPanel.Settings.DownloadMbps.ToString(CultureInfo.InvariantCulture)})start.ArgumentList.Add(arg);
+            if(trafficPanel.Settings.Adaptive)start.ArgumentList.Add("--adaptive");
             using var process=Process.Start(start)??throw new IOException("IP test süreci başlatılamadı.");process.StandardInput.NewLine="\n";await process.StandardInput.WriteLineAsync(secret);process.StandardInput.Close();secret="";
             var output=process.StandardOutput.ReadToEndAsync();var errors=process.StandardError.ReadToEndAsync();
             try {await process.WaitForExitAsync(timeout.Token);}catch{try{process.Kill();}catch{}throw;}

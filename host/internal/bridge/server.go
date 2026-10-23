@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/binary"
 	"errors"
+	"github.com/CanKaya4/pdanetnobetci1/host/internal/traffic"
 	"io"
 	"net"
 	"strconv"
@@ -12,7 +13,10 @@ import (
 	"time"
 )
 
-type Server struct{ Transport Transport }
+type Server struct {
+	Transport Transport
+	Traffic   *traffic.Manager
+}
 
 func (s Server) Serve(ctx context.Context, listener net.Listener) error {
 	if err := s.Transport.Validate(); err != nil {
@@ -127,6 +131,15 @@ func (s Server) handle(ctx context.Context, c net.Conn) error {
 			return err
 		}
 		defer remote.Close()
+		var uploadWriter io.Writer = remote
+		var downloadWriter io.Writer = c
+		var flow *traffic.Flow
+		if s.Traffic != nil {
+			flow = s.Traffic.Flow(ctx, traffic.Bulk)
+			defer flow.Close()
+			uploadWriter = traffic.Writer{Flow: flow, Writer: remote}
+			downloadWriter = traffic.Writer{Flow: flow, Down: true, Writer: c}
+		}
 		if err = reply(c, 0, nil); err != nil {
 			return err
 		}
@@ -143,8 +156,11 @@ func (s Server) handle(ctx context.Context, c net.Conn) error {
 		upload := make(chan struct{})
 		go func() {
 			defer close(upload)
-			_, e := io.Copy(remote, c)
+			_, e := io.Copy(uploadWriter, c)
 			if e != nil {
+				if flow != nil {
+					flow.Close()
+				}
 				remote.Close()
 				c.Close()
 				return
@@ -153,13 +169,16 @@ func (s Server) handle(ctx context.Context, c net.Conn) error {
 				tcp.CloseWrite()
 			}
 		}()
-		_, err = io.Copy(c, remote)
+		_, err = io.Copy(downloadWriter, remote)
 		if tcp, ok := c.(*net.TCPConn); ok {
 			tcp.CloseWrite()
 		}
 		// Preserve a remote half-close: the client may still be uploading.
 		// Context cancellation closes both sockets if the remaining half stays idle.
 		if err != nil {
+			if flow != nil {
+				flow.Close()
+			}
 			c.Close()
 			remote.Close()
 		}
@@ -185,6 +204,7 @@ func (s Server) udp(ctx context.Context, control net.Conn) error {
 	}
 	var mu sync.Mutex
 	flows := map[string]net.Conn{}
+	schedules := map[string]*traffic.Flow{}
 	stopped := false
 	done := make(chan struct{})
 	go func() {
@@ -192,6 +212,9 @@ func (s Server) udp(ctx context.Context, control net.Conn) error {
 		mu.Lock()
 		stopped = true
 		for _, f := range flows {
+			f.Close()
+		}
+		for _, f := range schedules {
 			f.Close()
 		}
 		mu.Unlock()
@@ -231,6 +254,7 @@ func (s Server) udp(ctx context.Context, control net.Conn) error {
 		key := net.JoinHostPort(host, strconv.Itoa(int(port)))
 		mu.Lock()
 		remote := flows[key]
+		managed := schedules[key]
 		full := len(flows) >= 64
 		closed := stopped
 		mu.Unlock()
@@ -252,14 +276,22 @@ func (s Server) udp(ctx context.Context, control net.Conn) error {
 				return nil
 			}
 			flows[key] = remote
+			if s.Traffic != nil {
+				managed = s.Traffic.Flow(ctx, traffic.Bulk)
+				schedules[key] = managed
+			}
 			mu.Unlock()
 			address := encodeAddress(host, port)
-			go func(key string, remote net.Conn, address []byte, peer net.UDPAddr) {
+			go func(key string, remote net.Conn, address []byte, peer net.UDPAddr, managed *traffic.Flow) {
 				defer remote.Close()
+				if managed != nil {
+					defer managed.Close()
+				}
 				defer func() {
 					mu.Lock()
 					if flows[key] == remote {
 						delete(flows, key)
+						delete(schedules, key)
 					}
 					mu.Unlock()
 				}()
@@ -278,18 +310,35 @@ func (s Server) udp(ctx context.Context, control net.Conn) error {
 						return
 					}
 					packet := append(append([]byte{0, 0, 0}, address...), data...)
+					if managed != nil {
+						if err := managed.Datagram(true, size); err != nil {
+							return
+						}
+					}
 					if _, err := socket.WriteToUDP(packet, &peer); err != nil {
 						return
 					}
+					if managed != nil {
+						managed.Count(true, size)
+					}
 				}
-			}(key, remote, address, *peer)
+			}(key, remote, address, *peer, managed)
 		}
 		remote.SetWriteDeadline(time.Now().Add(5 * time.Second))
+		if managed != nil {
+			if err := managed.Datagram(false, length); err != nil {
+				remote.Close()
+				continue
+			}
+		}
 		frame := binary.BigEndian.AppendUint16(nil, uint16(length))
 		frame = append(frame, payload...)
 		if _, err := remote.Write(frame); err != nil {
 			remote.Close()
 		} else {
+			if managed != nil {
+				managed.Count(false, length)
+			}
 			remote.SetReadDeadline(time.Now().Add(60 * time.Second))
 		}
 	}
