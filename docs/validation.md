@@ -1,5 +1,32 @@
 # Validation record — engine preview
 
+## Local Galaxy A56 preparation — 2026-10-23
+
+On the user's Windows 11 PC, the selected Internet route was confirmed to use
+Wi-Fi and adapter/route/DNS snapshots were saved locally under ignored
+`build/reports/device-stage1/`. A normal Wi-Fi HTTPS baseline returned HTTP 200;
+this is not a USB test result. PdaNet's adapter was disconnected.
+
+ADB found the authorized USB Galaxy A56 SM-A566B, Android 16 / API 36.
+The previously locally built development APK installed successfully. Its activity
+started and its foreground service was observed running. The UI reported cellular
+ready; Android connectivity state recorded the app's CELLULAR-only network request
+on the mobile Internet network (reported LTE at observation time, not a measured
+5G session). The source explicitly uses that Network's DNS/TCP socket factory and
+bindSocket for UDP.
+
+An automatic pairing-code extraction/start command was rejected by the local
+execution policy. No pairing, ADB forward, Windows SOCKS listener or cellular
+TCP/UDP Internet result was completed in this stage. The user chose to enter the
+code privately in a local terminal instead. `scripts/connect-device.ps1` prepares
+that manual step; `scripts/device-smoke.py` prepares bounded HTTPS/UDP DNS probes.
+Five offline safety checks for the diagnostic passed, and the PowerShell script
+parsed successfully. Actual physical latency/loss/throughput results are pending.
+See [local instructions](local-device-testing.md). No adapter, global proxy, DNS,
+default route, hotspot, PdaNet, MyPublicWiFi or USB mode was changed.
+
+## Prior cloud and hosted-runner evidence
+
 Current-instance checks in Codex Cloud on 2026-10-23:
 
 - Verified Go and Temurin archives against upstream SHA256; Android command-line
