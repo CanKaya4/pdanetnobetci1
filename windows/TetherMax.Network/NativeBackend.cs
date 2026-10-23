@@ -7,6 +7,8 @@ namespace TetherMax.Network;
 // Commands contain only validated GUIDs, fixed prefixes and generated ownership tags.
 public sealed class NativeBackend:IBackend
 {
+    const string OptionalQueries="function OptionalIPv4([int]$index){try{Get-NetIPAddress -InterfaceIndex $index -AddressFamily IPv4 -ErrorAction Stop}catch{if($_.FullyQualifiedErrorId -notlike 'CmdletizationQuery_NotFound*'){throw}}}; "+
+        "function OptionalRoute([int]$index,[string]$prefix){try{Get-NetRoute -InterfaceIndex $index -DestinationPrefix $prefix -PolicyStore ActiveStore -ErrorAction Stop}catch{if($_.FullyQualifiedErrorId -notlike 'CmdletizationQuery_NotFound*'){throw}}}; ";
     readonly Journal journal;
     public NativeBackend(Journal journal){this.journal=journal;}
     void ExecuteOwned(string commands,bool applying)
@@ -24,9 +26,9 @@ public sealed class NativeBackend:IBackend
     public static string ConfigureScript(Plan p)
     {
         p.Validate();
-        return Adapter(p)+"if($a.Count -ne 1){throw 'Owned adapter missing'}; $i=$a[0].ifIndex; "+
+        return OptionalQueries+Adapter(p)+"if($a.Count -ne 1){throw 'Owned adapter missing'}; $i=$a[0].ifIndex; "+
         "if(@(Get-NetIPAddress -AddressFamily IPv4 | Where-Object {$_.IPAddress -eq '10.254.88.2'}).Count){throw 'Tunnel address already in use'}; "+
-        "if(@(Get-NetIPAddress -InterfaceIndex $i -AddressFamily IPv4 | Where-Object {$_.IPAddress -notlike '169.254.*'}).Count){throw 'Owned adapter has existing IPv4 state'}; "+
+        "if(@(OptionalIPv4 $i | Where-Object {$_.IPAddress -notlike '169.254.*'}).Count){throw 'Owned adapter has existing IPv4 state'}; "+
         "if(@(Get-DnsClientNrptRule | Where-Object {$_.DisplayName -eq '"+p.Tag+"'}).Count){throw 'NRPT ownership conflict'}; "+
         "Set-NetIPInterface -InterfaceIndex $i -AddressFamily IPv4 -Dhcp Disabled -AutomaticMetric Disabled -InterfaceMetric 1 -NlMtuBytes 1500; "+
         "New-NetIPAddress -InterfaceIndex $i -AddressFamily IPv4 -IPAddress 10.254.88.2 -PrefixLength 30 -PolicyStore ActiveStore | Out-Null; "+
@@ -39,12 +41,12 @@ public sealed class NativeBackend:IBackend
     public static string RemoveScript(Plan p)
     {
         p.Validate();
-        return "$rules=@(Get-DnsClientNrptRule | Where-Object {$_.DisplayName -eq '"+p.Tag+"'}); "+
+        return OptionalQueries+"$rules=@(Get-DnsClientNrptRule | Where-Object {$_.DisplayName -eq '"+p.Tag+"'}); "+
         "if($rules.Count -gt 1){throw 'Ambiguous owned DNS rule'}; foreach($r in $rules) { if($r.Comment -ne '"+p.Id+"' -or @($r.Namespace).Count -ne 1 -or @($r.Namespace)[0] -ne '.' -or [string]$r.NameServers -ne '1.1.1.1'){throw 'Owned DNS rule replaced'}; Remove-DnsClientNrptRule -Name $r.Name -Force }; "+
         Adapter(p)+"if($a.Count -eq 1) { $i=$a[0].ifIndex; "+
-        "foreach($prefix in @('128.0.0.0/1','0.0.0.0/1')) { $routes=@(Get-NetRoute -InterfaceIndex $i -DestinationPrefix $prefix -PolicyStore ActiveStore -ErrorAction SilentlyContinue); foreach($r in $routes) { if($r.NextHop -ne '0.0.0.0' -or $r.RouteMetric -ne 1){throw 'Owned route replaced'}; $r | Remove-NetRoute -Confirm:$false } }; "+
+        "foreach($prefix in @('128.0.0.0/1','0.0.0.0/1')) { $routes=@(OptionalRoute $i $prefix); foreach($r in $routes) { if($r.NextHop -ne '0.0.0.0' -or $r.RouteMetric -ne 1){throw 'Owned route replaced'}; $r | Remove-NetRoute -Confirm:$false } }; "+
         "Set-DnsClientServerAddress -InterfaceIndex $i -ResetServerAddresses; "+
-        "$ips=@(Get-NetIPAddress -InterfaceIndex $i -AddressFamily IPv4 -ErrorAction SilentlyContinue | Where-Object {$_.IPAddress -eq '10.254.88.2'}); foreach($ip in $ips) {if($ip.PrefixLength -ne 30){throw 'Owned IP replaced'}; $ip|Remove-NetIPAddress -Confirm:$false} }; Clear-DnsClientCache";
+        "$ips=@(OptionalIPv4 $i | Where-Object {$_.IPAddress -eq '10.254.88.2'}); foreach($ip in $ips) {if($ip.PrefixLength -ne 30){throw 'Owned IP replaced'}; $ip|Remove-NetIPAddress -Confirm:$false} }; Clear-DnsClientCache";
     }
     public static string PowerShell(string commands)
     {
