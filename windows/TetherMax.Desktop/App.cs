@@ -203,7 +203,18 @@ internal sealed class Dashboard : Window
             if(engine!=null){if(!engine.HasExited){engine.Kill();await engine.WaitForExitAsync();}engine.Dispose();engine=null;}
             trafficPanel.Reset();
             systemNetwork=new SystemNetwork();
-            await systemNetwork.Start(root,"127.0.0.1:"+dataForward[4..],secret,message=>Dispatcher.BeginInvoke(()=>{Note(message);if(message.Contains("\"network-active\""))state.Text="Sistem geneli IPv4 · USB · IPv6 engelli";if(message.Contains("\"network-stopped\""))state.Text="Sistem geneli test durdu · kurtarma kaydını kontrol edin";}));secret="";
+            await systemNetwork.Start(root,"127.0.0.1:"+dataForward[4..],secret,message=>Dispatcher.BeginInvoke(()=>{
+                Note(message);
+                try{using var record=JsonDocument.Parse(message);string? type=record.RootElement.GetProperty("type").GetString();
+                    if(type=="network-active")state.Text="Sistem geneli IPv4 · USB · IPv6 engelli";
+                    if(type=="network-stopped")state.Text="Sistem geneli test durdu · kurtarma kaydını kontrol edin";
+                    if(type=="network-report"){
+                        string folder=Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),"TetherMax","reports");Directory.CreateDirectory(folder);
+                        string file=Path.Combine(folder,"native-"+DateTime.UtcNow.ToString("yyyyMMdd-HHmmss-fffffff")+".json");
+                        using var output=new FileStream(file,FileMode.CreateNew,FileAccess.Write,FileShare.Read);byte[] bytes=Encoding.UTF8.GetBytes(message);output.Write(bytes);output.Flush(true);Note("Windows/Android ayrı sayaç raporu: "+file);
+                    }
+                }catch(JsonException){}catch(IOException e){Note("Yerel rapor kaydedilemedi: "+e.Message);}
+            }));secret="";
             Note("Yönetici ağ yardımcısı başlatıldı; aktif veri yolu onayı bekleniyor. Test 120 saniyede geri alınır.");
         }catch{if(systemNetwork!=null){await systemNetwork.DisposeAsync();systemNetwork=null;}throw;}
         finally{busy=false;}

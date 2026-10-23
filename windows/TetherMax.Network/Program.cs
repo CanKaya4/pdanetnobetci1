@@ -77,6 +77,7 @@ public static class Program
         // startup/configuration is in progress. They never carry the bearer.
         Task pulse=Task.Run(async()=>{try{while(!lifetime.IsCancellationRequested){journal.Pulse();await worker.StandardInput.BaseStream.WriteAsync(new byte[]{0},lifetime.Token);await worker.StandardInput.BaseStream.FlushAsync(lifetime.Token);await Task.Delay(1000,lifetime.Token);}}catch{lifetime.Cancel();}});
         Plan? plan=null;Process? watcher=null;Task? telemetry=null;
+        JsonElement? lastCounters=null;
         var outputLock=new SemaphoreSlim(1);
         async Task Send(object value){await outputLock.WaitAsync();try{await writer.WriteLineAsync(JsonSerializer.Serialize(value));}finally{outputLock.Release();}}
         try {
@@ -101,7 +102,7 @@ public static class Program
                 if(File.ReadAllText(journal.PathFor("watcher-ready"))!=watcher.Id.ToString())throw new IOException("Recovery acknowledgement mismatch");
             });
             journal.WriteNew("measurement.json",JsonSerializer.Serialize(new{startedAt=DateTimeOffset.UtcNow,request.MaxPayloadBytes,MaxSeconds=maxSeconds,adapter=name,guid,operatorAccounting="not-measured",standardAndroidTethering="not-observed"}));
-            telemetry=Task.Run(async()=>{try{using var log=new StreamWriter(new FileStream(journal.PathFor("host-counters.jsonl"),FileMode.CreateNew,FileAccess.Write,FileShare.Read)){AutoFlush=true};while(await worker.StandardOutput.ReadLineAsync() is string data){using var item=JsonDocument.Parse(data);await log.WriteLineAsync(JsonSerializer.Serialize(new{observedAt=DateTimeOffset.UtcNow,payload=item.RootElement.Clone()}));try{await Send(new{type="ip-counters",payload=item.RootElement.Clone()});}catch{}}}catch{lifetime.Cancel();}});
+            telemetry=Task.Run(async()=>{try{using var log=new StreamWriter(new FileStream(journal.PathFor("host-counters.jsonl"),FileMode.CreateNew,FileAccess.Write,FileShare.Read)){AutoFlush=true};while(await worker.StandardOutput.ReadLineAsync() is string data){using var item=JsonDocument.Parse(data);lastCounters=item.RootElement.Clone();await log.WriteLineAsync(JsonSerializer.Serialize(new{observedAt=DateTimeOffset.UtcNow,payload=item.RootElement.Clone()}));try{await Send(new{type="ip-counters",payload=item.RootElement.Clone()});}catch{}}}catch{lifetime.Cancel();}});
             await Send(new{type="network-active",adapter=name,guid,session=journal.Folder,scope="system-wide IPv4; non-loopback IPv6 blocked; not carrier certification"});
             Task heartbeat=Task.Run(async()=>{try{while(!lifetime.IsCancellationRequested){using var timeout=CancellationTokenSource.CreateLinkedTokenSource(lifetime.Token);timeout.CancelAfter(TimeSpan.FromSeconds(5));string? command=await reader.ReadLineAsync(timeout.Token);if(command!="heartbeat")break;}}catch{}finally{lifetime.Cancel();}});
             var uptime=Stopwatch.StartNew();
@@ -119,6 +120,12 @@ public static class Program
             } else {try{if(!worker.HasExited){worker.Kill();await worker.WaitForExitAsync();}recovered=true;}catch{}}
             lifetime.Cancel();try{worker.StandardInput.Close();}catch{}
             await pulse; if(telemetry!=null)await telemetry;
+            try {
+                JsonElement? ReadJson(string name){if(!File.Exists(journal.PathFor(name)))return null;using var doc=JsonDocument.Parse(File.ReadAllText(journal.PathFor(name)));return doc.RootElement.Clone();}
+                await Send(new{type="network-report",endedAt=DateTimeOffset.UtcNow,recovered=recovered||journal.Completed,session=journal.Folder,
+                    measurement=ReadJson("measurement.json"),androidBefore=ReadJson("android-before.json"),androidAfter=ReadJson("android-after.json"),hostLastSample=lastCounters,
+                    hostFinalSample=lastCounters?.GetProperty("type").GetString()=="ip-counters-final",operatorAccounting="not-measured",androidStandardTetheringOff="not-observed"});
+            }catch{}
             try{await Send(new{type="network-stopped",recovered,session=journal.Folder});}catch{}
             // Never kill the watcher on failed recovery.
             watcher?.Dispose();
