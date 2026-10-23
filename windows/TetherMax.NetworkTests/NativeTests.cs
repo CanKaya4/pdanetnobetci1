@@ -110,7 +110,11 @@ static class NativeTests
         string javaPort=await java.StandardOutput.ReadLineAsync(initialTimeout.Token)??throw new Exception("Java peer failed");
         Environment.SetEnvironmentVariable("TETHERMAX_NATIVE_TRANSPORT","127.0.0.1:"+int.Parse(javaPort));
         using var rsa=RSA.Create(2048);var certRequest=new CertificateRequest("CN=tethermax-fixture",rsa,HashAlgorithmName.SHA256,RSASignaturePadding.Pkcs1);
-        using var cert=certRequest.CreateSelfSigned(DateTimeOffset.UtcNow.AddMinutes(-1),DateTimeOffset.UtcNow.AddHours(1));
+        using var generatedCert=certRequest.CreateSelfSigned(DateTimeOffset.UtcNow.AddMinutes(-1),DateTimeOffset.UtcNow.AddHours(1));
+        // Schannel server credentials require a Windows key container. Import
+        // this fixture's PFX into the test user's temporary key set; no root CA
+        // is installed and the container is released when the cert is disposed.
+        using var cert=X509CertificateLoader.LoadPkcs12(generatedCert.Export(X509ContentType.Pfx),null,X509KeyStorageFlags.UserKeySet|X509KeyStorageFlags.Exportable);
         var tcp=new TcpListener(IPAddress.Loopback,0);tcp.Start();int tcpPort=((IPEndPoint)tcp.LocalEndpoint).Port;
         using var udp=new UdpClient(new IPEndPoint(IPAddress.Loopback,0));int udpPort=((IPEndPoint)udp.Client.LocalEndPoint!).Port;
         using var dns=new UdpClient(new IPEndPoint(IPAddress.Loopback,53));int dnsQueries=0;
@@ -142,14 +146,17 @@ static class NativeTests
                     string fallbackSelected=NativeBackend.PowerShell("(Find-NetRoute -RemoteIPAddress 198.18.0.2 | Select-Object -First 1).InterfaceAlias");Check(fallbackSelected.Trim()==trap.Name,"negative probe must target the owned fallback adapter");
                     Check(!await TrapUDP(),"IPv4 UDP leaked to the alternate owned adapter");
                     long rejectedBefore=trap.Rejected;await TrapV6();Check(trap.Rejected==rejectedBefore,"IPv6 escaped the WFP guard");
+                    Console.WriteLine("PASS native IPv4 alternate-path block and IPv6 block: "+crash);
                     using var handler=new HttpClientHandler{UseProxy=false,ServerCertificateCustomValidationCallback=(_,remote,_,_)=>remote?.GetCertHashString()==cert.GetCertHashString()};
                     using var http=new HttpClient(handler){Timeout=TimeSpan.FromSeconds(15)};
                     byte[] received=await http.GetByteArrayAsync("https://198.18.0.1:"+tcpPort+"/");Check(received.SequenceEqual(body),"native HTTPS corruption");
+                    Console.WriteLine("PASS native certificate-pinned HTTPS 256 KiB: "+crash);
                     using var datagram=new UdpClient(AddressFamily.InterNetwork);datagram.Connect(IPAddress.Parse("198.18.0.1"),udpPort);
                     byte[] payload=RandomNumberGenerator.GetBytes(1200);await datagram.SendAsync(payload);
                     using var queryTimeout=new CancellationTokenSource(TimeSpan.FromSeconds(10));var reply=await datagram.ReceiveAsync(queryTimeout.Token);Check(reply.Buffer.SequenceEqual(payload),"native UDP mismatch");
                     IPAddress[] addresses=await Dns.GetHostAddressesAsync("tethermax-"+Guid.NewGuid().ToString("N")+".invalid",queryTimeout.Token);
                     Check(addresses.Contains(IPAddress.Parse("198.18.0.1"))&&dnsQueries>0,"Windows DNS did not traverse relay fixture");
+                    Console.WriteLine("PASS native UDP echo and Windows DNS: "+crash);
                     if(crash=="gui"){owner.Kill();await owner.WaitForExitAsync();}
                     if(crash=="guardian")ProcessIdentity.Stop(p.GuardianPid,p.GuardianStart);
                     if(crash=="worker")ProcessIdentity.Stop(p.WorkerPid,p.WorkerStart);
