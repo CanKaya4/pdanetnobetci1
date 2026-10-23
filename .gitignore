@@ -1,0 +1,8 @@
+/build/
+/local.properties
+*.keystore
+*.log
+
+/.ci-tools/
+
+__pycache__/

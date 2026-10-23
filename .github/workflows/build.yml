@@ -1,0 +1,73 @@
+name: Engine builds and isolated tests
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  cloud-build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      TETHERMAX_TOOLS: ${{ github.workspace }}/.ci-tools
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff
+        with:
+          go-version: '1.26.1'
+          cache: false
+      - uses: actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3
+        with:
+          distribution: temurin
+          java-version: '21.0.13'
+      - name: Prepare pinned Android SDK packages
+        run: sdkmanager 'platforms;android-35' 'build-tools;35.0.0'
+      - name: Real Java to Go loopback transport tests
+        run: scripts/test.sh
+      - name: Build and verify APK
+        run: scripts/build-android.sh
+      - name: Cross-compile Windows applications
+        run: scripts/build-host.sh
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: tethermax-engine-preview
+          path: |
+            build/artifacts/*
+            build/reports/*
+          if-no-files-found: error
+  windows-native:
+    runs-on: windows-2025
+    timeout-minutes: 20
+    env:
+      TETHERMAX_TOOLS: ${{ github.workspace }}/.ci-tools
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff
+        with:
+          go-version: '1.26.1'
+          cache: false
+      - uses: actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3
+        with:
+          distribution: temurin
+          java-version: '21.0.13'
+      - name: Native Windows tests with Java peer; loopback only
+        shell: bash
+        run: scripts/test.sh
+      - name: Build native Windows executable and check safe default
+        shell: pwsh
+        run: |
+          Push-Location host
+          go build -trimpath -o ../build/tethermax-native.exe ./cmd/tethermax
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Pop-Location
+          ./build/tethermax-native.exe status
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          ./build/tethermax-native.exe serve
+          if ($LASTEXITCODE -ne 1) { throw 'Physical test safety gate failed' }
+          exit 0
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: windows-native-test-report
+          path: build/reports/go-test.txt
+          if-no-files-found: error
