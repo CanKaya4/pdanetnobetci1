@@ -115,6 +115,13 @@ class Program
             Require(script.Contains("-PolicyStore ActiveStore")&&script.Contains("128.0.0.0/1")&&rollback.Contains("Adapter identity changed"),"scoped ownership missing");
             Console.WriteLine("PASS transaction faults, recovery order, exact adapter ownership");
             MockCmdlets.Run(p);
+            string metadataFolder=Path.Combine(Path.GetTempPath(),"TetherMax-record-"+Guid.NewGuid().ToString("N")+"-ö'path");Directory.CreateDirectory(metadataFolder);
+            var metadataJournal=new Journal(metadataFolder,false);
+            NativeBackend.PowerShell(NativeBackend.ExecutorRecordScript(metadataJournal));
+            NativeBackend.PowerShell(NativeBackend.ExecutorRecordScript(metadataJournal));
+            using(var metadata=JsonDocument.Parse(File.ReadAllText(metadataJournal.PathFor("os-process.json"))))
+                Require(metadata.RootElement.GetProperty("pid").GetInt32()>0&&metadata.RootElement.GetProperty("start").GetInt64()>0&&!File.Exists(metadataJournal.PathFor("os-process.tmp")),"executor metadata publication failed");
+            Console.WriteLine("PASS actual Windows PowerShell atomic metadata replacement in quoted Unicode path; no network commands");
             foreach(string mode in new[]{"owner-crash","stall","watcher-crash","retry","os-executor"})await FixtureProcessTest(mode);
             Console.WriteLine("All offline network checks passed; no OS networking or physical USB used.");return 0;
         }catch(Exception e){Console.Error.WriteLine(e);return 1;}
