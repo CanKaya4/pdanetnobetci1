@@ -44,6 +44,7 @@ doğrulama için GUI yalnızca sınırlı geçiş testini sunar.
   adaptör/IP-arayüzü/rota/DNS/NRPT snapshot'ının birebir geri gelmesi doğrulandı.
 * Atomik journal/hazır yayınlama düzeltmesinin
   [dbc1f49 native CI'si de geçti](https://github.com/CanKaya4/pdanetnobetci1/actions/runs/40025260623).
+  [Paketlenen e16f73f sürümünün native CI'si de başarılıdır](https://github.com/CanKaya4/pdanetnobetci1/actions/runs/40025421893).
   Test VM'sinin acil rescue yardımcısı gerekmedi; rescue gerektiren denemeler
   başarısız sayıldı. Bu yardımcı ürün paketinde yoktur.
 * Yerel 39 Go testi ve vet, 7 offline kota analiz testi, 10 network test grubu
@@ -52,7 +53,8 @@ doğrulama için GUI yalnızca sınırlı geçiş testini sunar.
   kullanıcı bilgisayarının ağ yapılandırmasını değiştirmez.
 * APK yeniden derlendi; v2/v3 imza doğrulaması geçti. WPF ve guardian x64
   self-contained yayımlandı. MSI paketleyicisi runtime ve resmî Wintun pinini
-  doğruladı. Paketler kurulmadı, native helper kullanıcı PC'sinde başlatılmadı.
+  doğruladı. Paketler kurulmadı; kullanıcı PC'sinde native ağ değiştirme modu
+  çalıştırılmadı. Paketlerin salt status komutları ve onay kapısı kontrol edildi.
 
 Native CI'deki CELLULAR bildirimi açıkça fixture mock'udur; gerçek telefon,
 USB kablosu veya operatör kanıtı değildir. Önceki A56 hücresel memory-IP
