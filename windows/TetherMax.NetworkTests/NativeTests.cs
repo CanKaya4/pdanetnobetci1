@@ -85,6 +85,17 @@ static class NativeTests
         Task echoServer=Task.Run(async()=>{try{while(!stop.IsCancellationRequested){var packet=await udp.ReceiveAsync(stop.Token);await udp.SendAsync(packet.Buffer,packet.RemoteEndPoint,stop.Token);}}catch(OperationCanceledException){}catch(ObjectDisposedException){}});
         Task dnsServer=Task.Run(async()=>{try{while(!stop.IsCancellationRequested){var packet=await dns.ReceiveAsync(stop.Token);Interlocked.Increment(ref dnsQueries);await dns.SendAsync(await DnsReply(packet.Buffer),packet.RemoteEndPoint,stop.Token);}}catch(OperationCanceledException){}catch(ObjectDisposedException){}});
         string baseline=NativeBackend.PowerShell("Find-NetRoute -RemoteIPAddress 1.1.1.1 | Select-Object InterfaceIndex,DestinationPrefix,NextHop | ConvertTo-Json -Compress");
+        await using var trap=await FallbackTrap.Start(Bundle,"127.0.0.1:"+javaPort,token);
+        async Task<bool> TrapUDP()
+        {
+            using var c=new UdpClient(AddressFamily.InterNetwork);c.Connect(IPAddress.Parse("198.18.0.2"),udpPort);
+            using var timeout=new CancellationTokenSource(TimeSpan.FromSeconds(2));
+            byte[] bytes=RandomNumberGenerator.GetBytes(64);
+            try{await c.SendAsync(bytes);var response=await c.ReceiveAsync(timeout.Token);return response.Buffer.SequenceEqual(bytes);}catch(SocketException){return false;}catch(OperationCanceledException){return false;}
+        }
+        async Task TrapV6(){using var c=new UdpClient(AddressFamily.InterNetworkV6);try{await c.SendAsync(new byte[]{1},new IPEndPoint(IPAddress.Parse("2001:db8:ffff::1"),32123));}catch(SocketException){}await Task.Delay(1500);}
+        Check(await TrapUDP(),"fallback trap positive control failed before guard");
+        await Task.Delay(2000);long v6Before=trap.Rejected;await TrapV6();Check(trap.Rejected>v6Before,"IPv6 trap positive control did not observe packets");
         string testsExe=Environment.ProcessPath!;
         try {
             foreach(string crash in new[]{"gui","guardian","worker","watcher"}) {
@@ -94,6 +105,9 @@ static class NativeTests
                     string folder=await owner.StandardOutput.ReadLineAsync(startTimeout.Token)??throw new Exception("Native owner failed: "+await ownerErrors);
                     j=new Journal(folder);p=j.Read();using(var wfp=new Wfp()){Check(wfp.Exists(p.V4Filter)&&wfp.Exists(p.V6Filter),"native persistent WFP filters not installed");}
                     var selected=NativeBackend.PowerShell("(Find-NetRoute -RemoteIPAddress 1.1.1.1 | Select-Object -First 1).InterfaceAlias");Check(selected.Trim()==p.AdapterName,"real Windows route not on Wintun");
+                    string fallbackSelected=NativeBackend.PowerShell("(Find-NetRoute -RemoteIPAddress 198.18.0.2 | Select-Object -First 1).InterfaceAlias");Check(fallbackSelected.Trim()==trap.Name,"negative probe must target the owned fallback adapter");
+                    Check(!await TrapUDP(),"IPv4 UDP leaked to the alternate owned adapter");
+                    long rejectedBefore=trap.Rejected;await TrapV6();Check(trap.Rejected==rejectedBefore,"IPv6 escaped the WFP guard");
                     using var handler=new HttpClientHandler{UseProxy=false,ServerCertificateCustomValidationCallback=(_,remote,_,_)=>remote?.GetCertHashString()==cert.GetCertHashString()};
                     using var http=new HttpClient(handler){Timeout=TimeSpan.FromSeconds(15)};
                     byte[] received=await http.GetByteArrayAsync("https://198.18.0.1:"+tcpPort+"/");Check(received.SequenceEqual(body),"native HTTPS corruption");
@@ -109,6 +123,7 @@ static class NativeTests
                     var timer=Stopwatch.StartNew();while(!j.Completed){if(timer.Elapsed>TimeSpan.FromSeconds(65))throw new Exception("Native independent rollback timeout");await Task.Delay(200);}
                     using(var wfp=new Wfp()){Check(!wfp.Exists(p.V4Filter)&&!wfp.Exists(p.V6Filter),"native filter leak");}
                     string restored=NativeBackend.PowerShell("Find-NetRoute -RemoteIPAddress 1.1.1.1 | Select-Object InterfaceIndex,DestinationPrefix,NextHop | ConvertTo-Json -Compress");Check(restored==baseline,"previous Windows route was not restored");
+                    Check(await TrapUDP(),"rollback did not restore ordinary alternate-path behavior");
                     Console.WriteLine("PASS native Wintun -> gVisor -> Java loopback HTTPS/UDP/Windows DNS; "+crash+" crash rollback");
                 }finally {
                     if(j!=null&&p!=null&&!j.Completed)Watchdog.Recover(j,p,new NativeBackend(j));

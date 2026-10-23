@@ -12,7 +12,7 @@ public final class TestServer {
             private InetAddress address(String host) throws IOException {
                 // Native isolated-runner fixture only. Never compiled into APK.
                 if ("1".equals(System.getenv("TETHERMAX_FIXTURE_MAP_BENCHMARK")) &&
-                    (host.equals("198.18.0.1") || host.equals("1.1.1.1"))) return InetAddress.getLoopbackAddress();
+                    (host.equals("198.18.0.1") || host.equals("198.18.0.2") || host.equals("1.1.1.1"))) return InetAddress.getLoopbackAddress();
                 InetAddress address = InetAddress.getByName(host);
                 if (!address.isLoopbackAddress()) throw new IOException("fixture restricts destinations to loopback");
                 return address;
