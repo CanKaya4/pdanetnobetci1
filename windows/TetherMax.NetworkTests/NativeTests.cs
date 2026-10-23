@@ -25,6 +25,29 @@ static class NativeTests
         var s=new ProcessStartInfo(file){UseShellExecute=false,CreateNoWindow=true,RedirectStandardInput=true,RedirectStandardOutput=true,RedirectStandardError=true};
         foreach(string arg in args)s.ArgumentList.Add(arg);return Process.Start(s)??throw new IOException("Isolated test process failed");
     }
+    public static async Task<int> Rescue()
+    {
+        Admission();var lifetime=Stopwatch.StartNew();string done=Path.Combine(Workspace,"build","reports","native-rescue-finished");
+        while(lifetime.Elapsed<TimeSpan.FromMinutes(15)&&!File.Exists(done)) {
+            foreach(string folder in Directory.EnumerateDirectories(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData),"TetherMax-Network-*")) {
+                if(!File.Exists(Path.Combine(folder,"intent.json"))||File.Exists(Path.Combine(folder,"complete")))continue;
+                if(DateTime.UtcNow-File.GetLastWriteTimeUtc(Path.Combine(folder,"intent.json"))<TimeSpan.FromSeconds(90))continue;
+                // Disposable-VM emergency ONLY: restore runner control-plane
+                // access so a failed fail-closed test can publish diagnostics.
+                // This mode is never packaged into the product or counted PASS.
+                string log=Path.Combine(Workspace,"build","reports","native-rescue.log");
+                try {
+                    var j=new Journal(folder);var p=j.Read();File.AppendAllText(log,"Emergency VM recovery required: "+folder+Environment.NewLine);
+                    ProcessIdentity.Stop(p.WorkerPid,p.WorkerStart);ProcessIdentity.Stop(p.GuardianPid,p.GuardianStart);
+                    await Task.Delay(1000);
+                    try{new NativeBackend(j).RemoveConfiguration(p);}catch(Exception e){File.AppendAllText(log,e+Environment.NewLine);}
+                    using var wfp=new Wfp();wfp.Remove(p);
+                }catch(Exception e){File.AppendAllText(log,e+Environment.NewLine);}
+            }
+            await Task.Delay(1000);
+        }
+        return 0;
+    }
     public static async Task<int> Owner()
     {
         Admission();
@@ -67,6 +90,7 @@ static class NativeTests
     public static async Task<int> Run()
     {
         Admission();using var stop=new CancellationTokenSource();
+        using var rescue=Start(Environment.ProcessPath!,"--native-rescue");
         string token=Convert.ToHexString(RandomNumberGenerator.GetBytes(16)).ToLowerInvariant();
         Environment.SetEnvironmentVariable("TETHERMAX_TEST_TOKEN",token);Environment.SetEnvironmentVariable("TETHERMAX_FIXTURE_MAP_BENCHMARK","1");
         Environment.SetEnvironmentVariable("TETHERMAX_FIXTURE_CELLULAR_ATTESTATION","1");
@@ -137,6 +161,8 @@ static class NativeTests
             Environment.SetEnvironmentVariable("TETHERMAX_TEST_TOKEN",null);Environment.SetEnvironmentVariable("TETHERMAX_FIXTURE_MAP_BENCHMARK",null);
             Environment.SetEnvironmentVariable("TETHERMAX_FIXTURE_CELLULAR_ATTESTATION",null);
         }
+        Check(!File.Exists(Path.Combine(Workspace,"build","reports","native-rescue.log")),"Disposable VM emergency recovery was required; native implementation failed");
+        File.WriteAllText(Path.Combine(Workspace,"build","reports","native-rescue-finished"),"done");
         return 0;
     }
 }

@@ -102,7 +102,7 @@ public static class Program
             Task heartbeat=Task.Run(async()=>{try{while(!lifetime.IsCancellationRequested){using var timeout=CancellationTokenSource.CreateLinkedTokenSource(lifetime.Token);timeout.CancelAfter(TimeSpan.FromSeconds(5));string? command=await reader.ReadLineAsync(timeout.Token);if(command!="heartbeat")break;}}catch{}finally{lifetime.Cancel();}});
             var uptime=Stopwatch.StartNew();
             while(!lifetime.IsCancellationRequested&&!worker.HasExited&&watcher is {HasExited:false}&&(maxSeconds==0||uptime.Elapsed<TimeSpan.FromSeconds(maxSeconds)))await Task.Delay(100,lifetime.Token);
-        }catch(Exception e){try{await Send(new{type="network-error",message=e.Message});}catch{}}
+        }catch(Exception e){try{journal.WriteNew("activation-error.txt",e.ToString());}catch{}try{await Send(new{type="network-error",message=e.Message});}catch{}}
         finally {
             try{journal.WriteNew("android-after.json",await CellularStatus(engine,request.Transport,bearer));}catch(Exception e){try{journal.WriteNew("android-after-error.txt",e.Message);}catch{}}
             bearer="";
