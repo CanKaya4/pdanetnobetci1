@@ -45,6 +45,11 @@ sealed class FallbackTrap:IAsyncDisposable
                 "[pscustomobject]@{adapter=($a|Select-Object Name,Status,InterfaceGuid);addresses=@(Get-NetIPAddress -InterfaceIndex $i|Select-Object IPAddress,AddressState,InterfaceIndex);route=@(Find-NetRoute -RemoteIPAddress 198.18.0.2|Select-Object InterfaceAlias,InterfaceIndex,IPAddress,NextHop,DestinationPrefix)}|ConvertTo-Json -Depth 4 -Compress");
             if(p.HasExited)throw new Exception("Fallback data worker exited before probe: "+await trap.errors.WaitAsync(TimeSpan.FromSeconds(2)));
             Console.WriteLine("Native fallback adapter ready: "+state);
+            using(var snapshot=JsonDocument.Parse(state)) {
+                var routes=snapshot.RootElement.GetProperty("route").EnumerateArray().ToArray();
+                if(routes.Length==0||routes.Any(r=>r.GetProperty("InterfaceAlias").GetString()!=name))
+                    throw new Exception("Refusing negative/positive probe outside the owned trap interface");
+            }
             return trap;
         }catch(Exception cause){string worker=p.HasExited?await trap.errors.WaitAsync(TimeSpan.FromSeconds(2)):"worker still running";try{await trap.DisposeAsync();}catch{}throw new Exception("Native fallback setup failed; "+worker,cause);}
     }
