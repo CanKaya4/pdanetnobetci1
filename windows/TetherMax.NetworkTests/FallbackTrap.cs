@@ -9,6 +9,7 @@ sealed class FallbackTrap:IAsyncDisposable
     readonly Process process;
     readonly CancellationTokenSource stop=new();
     readonly Task heartbeat,telemetry;
+    readonly Task<string> errors;
     public string Name {get;}
     readonly Guid guid;
     long rejected;
@@ -16,6 +17,7 @@ sealed class FallbackTrap:IAsyncDisposable
     FallbackTrap(Process process,string name,Guid guid)
     {
         this.process=process;Name=name;this.guid=guid;
+        errors=process.StandardError.ReadToEndAsync();
         heartbeat=Task.Run(async()=>{try{while(!stop.IsCancellationRequested){await process.StandardInput.BaseStream.WriteAsync(new byte[]{0},stop.Token);await process.StandardInput.BaseStream.FlushAsync(stop.Token);await Task.Delay(500,stop.Token);}}catch{}});
         telemetry=Task.Run(async()=>{try{while(await process.StandardOutput.ReadLineAsync(stop.Token) is string line){using var doc=JsonDocument.Parse(line);if(doc.RootElement.TryGetProperty("counters",out var counters))Interlocked.Exchange(ref rejected,counters.GetProperty("Rejected").GetInt64());}}catch{}});
     }
@@ -32,7 +34,7 @@ sealed class FallbackTrap:IAsyncDisposable
         var trap=new FallbackTrap(p,name,guid);
         try {
             string select="$a=Get-NetAdapter -IncludeHidden | Where-Object {[guid]$_.InterfaceGuid -eq [guid]'"+guid+"'};if(@($a).Count -ne 1){throw 'trap missing'};$i=$a.ifIndex;";
-            NativeBackend.PowerShell(select+
+            string state=NativeBackend.PowerShell(select+
                 "Set-NetIPInterface -InterfaceIndex $i -AddressFamily IPv4 -Dhcp Disabled -NlMtuBytes 1500 -DadTransmits 0;"+
                 "Set-NetIPInterface -InterfaceIndex $i -AddressFamily IPv6 -DadTransmits 0;"+
                 "New-NetIPAddress -InterfaceIndex $i -IPAddress 10.254.89.2 -PrefixLength 30 -PolicyStore ActiveStore | Out-Null;"+
@@ -40,8 +42,9 @@ sealed class FallbackTrap:IAsyncDisposable
                 "New-NetIPAddress -InterfaceIndex $i -IPAddress 2001:db8:89::2 -PrefixLength 64 -PolicyStore ActiveStore | Out-Null;"+
                 "New-NetRoute -InterfaceIndex $i -DestinationPrefix 2001:db8:ffff::1/128 -NextHop :: -RouteMetric 1 -PolicyStore ActiveStore | Out-Null;"+
                 "$until=[DateTime]::UtcNow.AddSeconds(5);do{$ip=Get-NetIPAddress -InterfaceIndex $i -IPAddress 10.254.89.2;if($ip.AddressState -eq 'Preferred'){break};Start-Sleep -Milliseconds 100}while([DateTime]::UtcNow -lt $until);if($ip.AddressState -ne 'Preferred'){throw 'Trap address not ready'};"+
-                "Get-NetIPAddress -InterfaceIndex $i | Select-Object IPAddress,AddressState,InterfaceIndex | ConvertTo-Json -Compress");
-            Console.WriteLine("Native fallback adapter ready: "+name);
+                "[pscustomobject]@{adapter=($a|Select-Object Name,Status,InterfaceGuid);addresses=@(Get-NetIPAddress -InterfaceIndex $i|Select-Object IPAddress,AddressState,InterfaceIndex);route=@(Find-NetRoute -RemoteIPAddress 198.18.0.2|Select-Object InterfaceAlias,InterfaceIndex,IPAddress,NextHop,DestinationPrefix)}|ConvertTo-Json -Depth 4 -Compress");
+            if(p.HasExited)throw new Exception("Fallback data worker exited before probe: "+await trap.errors.WaitAsync(TimeSpan.FromSeconds(2)));
+            Console.WriteLine("Native fallback adapter ready: "+state);
             return trap;
         }catch{await trap.DisposeAsync();throw;}
     }
