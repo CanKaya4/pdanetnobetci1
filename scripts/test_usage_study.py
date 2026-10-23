@@ -51,5 +51,12 @@ class StudyTests(unittest.TestCase):
         self.assertEqual(study.analyze(r)["interpretation"], "inconclusive")
         r.update(pdanetVersion="5.23", hideTetherUsageEnabled=True)
         self.assertEqual(study.analyze(r)["interpretation"], "observed-counter-delta-only")
+    def test_unavailable_operator_counter_is_never_treated_as_zero(self):
+        r = self.record();r["before"]["carrierMobileUsed"] = None;r["after"]["carrierMobileUsed"] = None
+        r["carrierResolutionBytes"]["mobile"] = None
+        for reading in r["carrierReadings"]:reading["mobileUsed"] = None
+        result = study.analyze(r)
+        self.assertIsNone(result["deltaBytes"]["carrierMobileUsed"])
+        self.assertEqual(result["interpretation"], "inconclusive")
 
 if __name__ == "__main__":unittest.main()

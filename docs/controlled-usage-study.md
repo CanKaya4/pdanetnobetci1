@@ -66,3 +66,5 @@ Native Windows aşamasında 120 saniye/1 MiB payload sınırı yazılımda vard�
 offline analiz aracı kendi başına tüketim sınırlamaz. Başlangıç/bitiş zamanı,
 Windows/Android ayrı sayaçları ve seçili yol [native raporlarda](native-network.md)
 tutulur. Operatör kayıtları uygulama tarafından otomatik okunmaz.
+Tarife uygulaması bir sayacı/çözünürlüğü göstermiyorsa JSON'da `null` girin;
+görünmeyen değer sıfır değildir. Araç bu kaydı belirsiz tutar.

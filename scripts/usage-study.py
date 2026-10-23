@@ -27,9 +27,12 @@ def analyze(record):
     if sample == 0 or sample > budget:
         raise ValueError("known sample size must be positive and within the approved budget")
     resolution = record["carrierResolutionBytes"]
-    if max(number(resolution["mobile"]), number(resolution["hotspot"])) > sample:
+    known_resolution = [number(v) for v in (resolution["mobile"], resolution["hotspot"]) if v is not None]
+    if len(known_resolution) < 2:
+        reasons.append("carrier counter resolution unavailable")
+    if known_resolution and max(known_resolution) > sample:
         reasons.append("sample smaller than carrier counter resolution; quota attribution unresolved")
-    if number(resolution["mobile"]) == 0 or number(resolution["hotspot"]) == 0:
+    if 0 in known_resolution:
         raise ValueError("carrier counter resolution must be positive")
     if record.get("dataTestApproved") is not True:
         reasons.append("no recorded approval for the stated data budget")
@@ -39,13 +42,17 @@ def analyze(record):
     delta = {}
     # Application counters are payload measurements, not billed bytes.
     for key in ("windowsUpload", "windowsDownload", "androidUpload", "androidDownload", "carrierMobileUsed", "carrierHotspotUsed"):
+        if record["before"][key] is None or record["after"][key] is None:
+            delta[key] = None
+            reasons.append(key + ": counter unavailable; not zero")
+            continue
         before, after = number(record["before"][key]), number(record["after"][key])
         delta[key] = after - before
         if delta[key] < 0:
             reasons.append(key + ": counter reset/rollover; trial invalid")
-    if delta["windowsUpload"] + delta["windowsDownload"] > budget:
+    if sum(delta[k] or 0 for k in ("windowsUpload", "windowsDownload")) > budget:
         reasons.append("Windows payload exceeded trial budget")
-    if delta["androidUpload"] + delta["androidDownload"] > budget:
+    if sum(delta[k] or 0 for k in ("androidUpload", "androidDownload")) > budget:
         reasons.append("Android payload exceeded trial budget")
     if record.get("backgroundTrafficQuiet") is not True:
         reasons.append("background traffic not controlled")
@@ -59,7 +66,7 @@ def analyze(record):
             reasons.append("hotspot-off state not independently observed")
         if record.get("pathEvidence") != "native-wintun":
             reasons.append("missing system-wide native Wintun path evidence")
-        if delta["windowsUpload"] + delta["windowsDownload"] <= 0 or delta["androidUpload"] + delta["androidDownload"] <= 0:
+        if sum(delta[k] or 0 for k in ("windowsUpload", "windowsDownload")) <= 0 or sum(delta[k] or 0 for k in ("androidUpload", "androidDownload")) <= 0:
             reasons.append("missing nonzero host/phone relay payload counters")
     if record["mode"] == "pdanet" and (not record.get("pdanetVersion") or not isinstance(record.get("hideTetherUsageEnabled"), bool)):
         reasons.append("PdaNet version / Hide Tether Usage setting missing")
@@ -71,7 +78,9 @@ def analyze(record):
         times = [datetime.fromisoformat(r["observedAt"]) for r in readings]
         if any(t.utcoffset() is None for t in times) or any(a >= b for a, b in zip(times, times[1:])):
             raise ValueError("carrier reading timestamps must be timezone-aware and strictly ordered")
-        values = [(number(r["mobileUsed"]), number(r["hotspotUsed"])) for r in readings]
+        values = [tuple(None if r[k] is None else number(r[k]) for k in ("mobileUsed", "hotspotUsed")) for r in readings]
+        if any(None in v for v in values):
+            reasons.append("carrier reading contains an unavailable counter")
         if times[0] > start or times[-2] < end:
             reasons.append("carrier observations do not cover the trial and delayed follow-up")
         if values[0] != (record["before"]["carrierMobileUsed"], record["before"]["carrierHotspotUsed"]) or values[-1] != (record["after"]["carrierMobileUsed"], record["after"]["carrierHotspotUsed"]):
@@ -79,9 +88,9 @@ def analyze(record):
         if values[-1] != values[-2]:
             reasons.append("latest carrier readings still changing")
         for previous, current, timestamp in zip(values, values[1:], times[1:]):
-            if current != previous:
+            if None not in current and None not in previous and current != previous:
                 observed_delay = max(0, (timestamp - end).total_seconds())
-        if any(c[0] < p[0] or c[1] < p[1] for p, c in zip(values, values[1:])):
+        if any(c[i] is not None and p[i] is not None and c[i] < p[i] for p, c in zip(values, values[1:]) for i in (0, 1)):
             reasons.append("carrier readings contain reset/rollover")
     return {"mode": record["mode"], "budgetBytes": budget, "sampleBytes": sample, "selectedPath": selected,
             "observedCarrierUpdateDelaySeconds": observed_delay,
