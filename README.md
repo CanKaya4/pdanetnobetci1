@@ -9,6 +9,11 @@ HTTPS ve UDP DNS testleri geçti. Bu, tamamlanmış 1.0 veya sistem geneli inter
 bağlantısı değildir. [Kurulum](docs/windows-preview-tr.md),
 [protokol ve sınırlar](docs/pairing-v2.md), [cihaz kanıtı](docs/device-validation-2026-10-23.md).
 
+Yeni geliştirme: gVisor tabanlı deneysel IPv4 TCP/UDP paket motoru ve gerçek
+Wintun ring okuma/yazma arka ucu eklendi. Sentetik IP → Java relay testleri geçti.
+Yeni IP yolunun A56 testi ADB `unauthorized` nedeniyle bekliyor; önceki SOCKS
+cihaz testi bu yolun kanıtı değildir. [Kapsam ve doğrulama](docs/ip-engine.md).
+
 Normal kullanımda Windows uygulamasını açıp **Bağlan** seçilir; PowerShell veya
 uzun gizli kod girişi gerekmez. Aşağıdaki CLI/cloud bölümleri geliştirme içindir.
 
@@ -18,9 +23,9 @@ kurallarının aşılması garanti edilmez; uygulama bu kuralları değiştirmez
 
 **0.1 motor önizlemesi:** gerçek TCP/UDP soket aktarımı, Android hücresel DNS/ağ
 bağlama, ADB akış protokolü ve Windows loopback SOCKS5 istemcisi uygulanmıştır.
-Bu sürüm Windows CLI uygulamasıdır; tüm bilgisayarı otomatik yönlendiren bir TUN
+Windows WPF ve CLI uygulamaları vardır; tüm bilgisayarı otomatik yönlendiren bir TUN
 veya tamamlanmış oyun hızlandırıcısı değildir. APK geliştirme imzalıdır, EXE'ler
-Authenticode imzalı değildir. İlk fiziksel kullanım ayrıca onay bekler.
+Authenticode imzalı değildir. Yeni fiziksel test aşamaları ayrıca onay gerektirir.
 
 ## Güvenlik sınırı
 
@@ -28,7 +33,8 @@ Mevcut bilgisayar PdaNet üzerinden internete bağlıdır. PdaNet, MyPublicWiFi,
 adaptörler, DNS, rota ve sistem proxy'si değiştirilmeyecek. Kod otomatik ADB,
 sürücü kurulumu veya ağ yapılandırması çalıştırmaz. Windows uygulamasının varsayılanı
 `status` gösterip çıkmaktır. `serve` ayrıca `--approve-usb-test` gerektirir; bu
-bayrak kullanıcıdan onay almanın yerine geçmez. Tüm geliştirme Codex Cloud içindedir.
+bayrak kullanıcıdan onay almanın yerine geçmez. Yeni IP işçisi varsayılan olarak
+adaptör oluşturmayı reddeder. Global IP/rota/DNS yapılandırma kodu henüz yoktur.
 
 ## Bulutta derleme ve test
 
@@ -41,7 +47,9 @@ scripts/build-android.sh
 scripts/build-host.sh
 ```
 
-Araçlar `/workspace/toolchains` altında tutulur: Go 1.26.1, Temurin JDK 21.0.13+9,
+Araçlar `/workspace/toolchains` altında tutulur: bootstrap Go 1.26.1 kurar;
+IP motoru bağımlılıkları için Go 1.26.3 modül araç zinciri otomatik doğrulanıp
+seçilir. CI doğrudan Go 1.26.3 kullanır. Temurin JDK 21.0.13+9,
 Android platform 35 ve build-tools 35.0.0. Bootstrap indirme SHA256'larını ve TLS'yi
 doğrular, SDK paketleri SDK manager doğrulamasından geçer. SDK şartları kurulumda
 kabul edilir. `TETHERMAX_TOOLS`, `JAVA_HOME`, `ANDROID_SDK_ROOT` ile CI ortamındaki

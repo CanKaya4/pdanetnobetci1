@@ -25,7 +25,7 @@ try {
   & "$bt/apksigner.bat" sign --v4-signing-enabled false --ks build/android/debug.keystore --ks-pass pass:android --ks-key-alias androiddebugkey --out build/artifacts/tethermax-android-pairing-preview.apk "$out/aligned.apk"; Check
   & "$bt/apksigner.bat" verify --verbose build/artifacts/tethermax-android-pairing-preview.apk; Check
   dotnet build windows/TetherMax.Desktop -c Release -o $DesktopOutput; Check
-  $env:GOROOT=(Resolve-Path .ci-tools/go).Path; $env:GOTOOLCHAIN='local'; $env:GOCACHE="$root\.ci-tools\go-cache"
+  $env:GOROOT=(Resolve-Path .ci-tools/go).Path; $env:GOTOOLCHAIN='go1.26.3'; $env:GOCACHE="$root\.ci-tools\go-cache"
   Push-Location host
   $engineOutput=Join-Path $root (Join-Path $DesktopOutput 'tethermax-engine.exe')
   try { & "$env:GOROOT/bin/go.exe" build -trimpath -o $engineOutput ./cmd/tethermax; Check } finally {Pop-Location}

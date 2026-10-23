@@ -38,6 +38,7 @@ internal sealed class Dashboard : Window
         Button(actions,"Telefonları yenile",async()=>await Refresh());
         Button(actions,"Bağlan",async()=>await Connect()); Button(actions,"Bağlantıyı kes",async()=>{reconnect.IsChecked=false;await Disconnect();});
         Button(actions,"İnternet testi",async()=>await Diagnose());
+        Button(actions,"IP motoru testi",async()=>await DiagnoseIP());
         Button(actions,"Eşleştirmeyi unut",async()=>{await Disconnect();if(devices.SelectedItem is Device d){Pairing.Forget(d.Serial);Note("Windows eşleştirmesi silindi. Telefonda da Güvenilen bilgisayarları unut seçeneğini kullanın.");}});
         panel.Children.Add(reconnect);
         try {
@@ -75,10 +76,12 @@ internal sealed class Dashboard : Window
         if(busy||refreshing)return;refreshing=true;
         try{
             var old=(devices.SelectedItem as Device)?.Serial??selectedSerial;
-            var output=await Adb("devices","-l");var list=new List<Device>();
+            var output=await Adb("devices","-l");var list=new List<Device>();bool unauthorized=false;
             foreach(string line in output.Split('\n')){
                 var bits=line.Split((char[]?)null,StringSplitOptions.RemoveEmptyEntries);
-                if(bits.Length<2||bits[1]!="device")continue;
+                if(bits.Length<2)continue;
+                if(bits[1]=="unauthorized"){unauthorized=true;continue;}
+                if(bits[1]!="device")continue;
                 string path=await Adb("-s",bits[0],"get-devpath");
                 if(!path.Trim().StartsWith("usb:")) {
                     if(path.Trim()!="unknown"||bits[0].Contains(':'))continue;
@@ -94,6 +97,11 @@ internal sealed class Dashboard : Window
                 string forwards=await Adb("forward","--list");
                 bool Has(string? endpoint)=>endpoint!=null&&forwards.Split('\n').Any(line=>line.StartsWith(selectedSerial+" ")&&line.Split((char[]?)null,StringSplitOptions.RemoveEmptyEntries).Contains(endpoint));
                 if(!Has(pairForward)||!Has(dataForward)){await Disconnect();Note("TetherMax USB aktarım kanalı kayboldu; yeniden bağlantı bekleniyor.");}
+            }
+            if(engine==null&&!busy){
+                string next=list.Count>0?"USB telefon hazır · bağlantı kapalı":unauthorized?"Telefon bulundu · ADB izni bekleniyor":"Yetkili USB telefonu bulunamadı";
+                if(unauthorized&&list.Count==0&&state.Text!=next)Note("USB hata ayıklama açık olsa da bu bilgisayarın Android RSA izni gerekiyor. Uygulama izinleri veya USB bağlantısını sıfırlamaz.");
+                state.Text=next;
             }
         }catch(Exception ex){if(log.Text.Length==0)Note(ex.Message);}
         finally{refreshing=false;}
@@ -148,6 +156,23 @@ internal sealed class Dashboard : Window
             foreach(var result in await UdpDiagnostic.Run(socksPort))Note(result);
             var report=Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),"TetherMax","reports");Directory.CreateDirectory(report);
             File.WriteAllText(Path.Combine(report,DateTime.Now.ToString("yyyyMMdd-HHmmss")+".txt"),log.Text);
+        }finally{busy=false;}
+    }
+    async Task DiagnoseIP()
+    {
+        if(engine==null||busy||selectedSerial==null||pairForward==null||dataForward==null){Note("Önce yetkili USB bağlantısı kurun.");return;}
+        if(MessageBox.Show(this,"Adaptör, Windows rotası veya DNS oluşturmadan bellek içi IP stack üzerinden telefona test trafiği gönderilecek. 1 küçük HTTPS ve 5 DNS sorgusu; mobil veri tüketir. Devam edilsin mi?","İzole IP motoru testi",MessageBoxButton.YesNo)!=MessageBoxResult.Yes)return;
+        busy=true;
+        try {
+            using var timeout=new CancellationTokenSource(TimeSpan.FromSeconds(45));
+            string secret=await Pairing.Connect(int.Parse(pairForward[4..]),selectedSerial,code=>Dispatcher.InvokeAsync(()=>MessageBox.Show(this,"Telefondaki kısa numara aynı mı?\n"+code,"Güvenli eşleştirme",MessageBoxButton.YesNo)==MessageBoxResult.Yes).Task,timeout.Token);
+            var start=new ProcessStartInfo(EnginePath){UseShellExecute=false,CreateNoWindow=true,RedirectStandardInput=true,RedirectStandardOutput=true,RedirectStandardError=true,StandardOutputEncoding=Encoding.UTF8,StandardErrorEncoding=Encoding.UTF8};
+            foreach(var arg in new[]{"ip-check","--approve-usb-test","--transport","127.0.0.1:"+dataForward[4..]})start.ArgumentList.Add(arg);
+            using var process=Process.Start(start)??throw new IOException("IP test süreci başlatılamadı.");process.StandardInput.NewLine="\n";await process.StandardInput.WriteLineAsync(secret);process.StandardInput.Close();secret="";
+            var output=process.StandardOutput.ReadToEndAsync();var errors=process.StandardError.ReadToEndAsync();
+            try {await process.WaitForExitAsync(timeout.Token);}catch{try{process.Kill();}catch{}throw;}
+            string report=await output;Note("IP motoru sonucu: "+report.Trim());if(process.ExitCode!=0)Note("IP motoru testi başarısız: "+await errors);
+            string folder=Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),"TetherMax","reports");Directory.CreateDirectory(folder);File.WriteAllText(Path.Combine(folder,DateTime.Now.ToString("yyyyMMdd-HHmmss")+"-ip.json"),report);
         }finally{busy=false;}
     }
 }

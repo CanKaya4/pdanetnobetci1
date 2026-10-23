@@ -14,8 +14,17 @@ import (
 )
 
 func run(args []string) error {
+	if len(args) > 0 && args[0] == "ip-check" {
+		return runIPCheck(args[1:])
+	}
+	if len(args) > 0 && args[0] == "ip-stdio" {
+		return runIP(args[1:], true)
+	}
+	if len(args) > 0 && args[0] == "ip-worker" {
+		return runIP(args[1:], false)
+	}
 	if len(args) == 0 || args[0] == "status" {
-		fmt.Println("TetherMax 0.1.0-engine: inactive. No adapter, route, DNS, PdaNet or MyPublicWiFi changes. USB TCP/UDP SOCKS engine; system-wide TUN and adaptive QoS are not implemented.")
+		fmt.Println("TetherMax 0.1.0-engine: inactive. No adapter, route, DNS, PdaNet or MyPublicWiFi changes. USB SOCKS and experimental IPv4 TCP/UDP netstack available; system-wide routing and adaptive QoS are not implemented.")
 		return nil
 	}
 	if args[0] != "serve" {

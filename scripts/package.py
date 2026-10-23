@@ -17,5 +17,5 @@ for arch in ("amd64", "arm64"):
             z.write(file, file.relative_to(root))
 with (artifacts / "SHA256SUMS.txt").open("w") as out:
     for file in sorted(artifacts.iterdir()):
-        if file.suffix in (".apk", ".zip", ".exe"):
+        if file.suffix in (".apk", ".zip", ".exe", ".msi"):
             out.write(f"{hashlib.sha256(file.read_bytes()).hexdigest()}  {file.name}\n")

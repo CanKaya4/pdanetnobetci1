@@ -16,6 +16,10 @@ henüz uygulanmadı; arayüzde etkinmiş gibi gösterilmez.
    Veri kullanır; hız testi veya güvenilir uzun dönem kayıp ölçümü değildir.
 8. **Bağlantıyı kes**, yalnızca bu uygulamanın motorunu ve oluşturduğu forward'ları
    kapatır. Eski ADB sunucusu, başka forward'lar ve diğer uygulamalar korunur.
+9. **IP motoru testi**, bağlı telefona bellek içi gVisor IPv4 paketleri üzerinden
+   1 küçük HTTPS ve 5 UDP DNS sorgusu gönderir. Wintun yüklemez, Windows adaptörü,
+   rota veya DNS ayarı değiştirmez. Yeni yolun cihaz testi henüz tamamlanmadı;
+   ayrıntılar [ip-engine.md](ip-engine.md). Bu düğme sistem geneli interneti açmaz.
 
 ADB: bu önizleme `%LOCALAPPDATA%\Android\Sdk\platform-tools\adb.exe` konumundaki
 mevcut resmî SDK'yı kullanır. ADB otomatik indirme/kurma henüz yok. Yetkisiz

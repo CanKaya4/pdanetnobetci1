@@ -1,4 +1,9 @@
-# System-wide networking and SQM — not implemented
+# System-wide networking and SQM — staged implementation
+
+The experimental IPv4 packet-to-flow engine now exists; see [ip-engine.md](ip-engine.md)
+for its exact implementation, isolated tests and unverified hardware boundary.
+OS IP/route/DNS control and SQM are still not implemented. The remainder describes
+those outstanding requirements, rather than the current packet engine.
 
 The USB SOCKS engine has physical-device evidence. No TUN/SQM completion is
 claimed. The next implementation must operate first on isolated Windows hosts,
@@ -7,8 +12,8 @@ separate user approval before touching the user's current connection.
 
 [Wintun](https://www.wintun.net/) exposes layer-3 IP packets and distributes
 signed DLLs. It does not supply a TCP/IP stack or turn packets into SOCKS flows.
-A supported userspace TCP/IP stack and packet-to-flow adapter are needed before
-IPv4/TCP/UDP/DNS can route to the existing Android dialer. IPv6 and shared ICS /
+A supported userspace TCP/IP stack (gVisor via tun2socks/core) and packet-to-flow
+adapter now connect IPv4/TCP/UDP/DNS to the existing Android dialer. IPv6 and shared ICS /
 MyPublicWiFi paths require independent validation and licenses. No DLL has been
 loaded, adapter created or driver installed during this development increment.
 
