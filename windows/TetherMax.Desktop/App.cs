@@ -201,6 +201,7 @@ internal sealed class Dashboard : Window
             // Preserve the selected ADB forwards but stop the unbudgeted SOCKS
             // worker/adaptive probes before starting the bounded global test.
             if(engine!=null){if(!engine.HasExited){engine.Kill();await engine.WaitForExitAsync();}engine.Dispose();engine=null;}
+            trafficPanel.Reset();
             systemNetwork=new SystemNetwork();
             await systemNetwork.Start(root,"127.0.0.1:"+dataForward[4..],secret,message=>Dispatcher.BeginInvoke(()=>{Note(message);if(message.Contains("\"network-active\""))state.Text="Sistem geneli IPv4 · USB · IPv6 engelli";if(message.Contains("\"network-stopped\""))state.Text="Sistem geneli test durdu · kurtarma kaydını kontrol edin";}));secret="";
             Note("Yönetici ağ yardımcısı başlatıldı; aktif veri yolu onayı bekleniyor. Test 120 saniyede geri alınır.");

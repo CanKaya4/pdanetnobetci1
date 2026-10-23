@@ -107,6 +107,7 @@ class Program
             Require(!script.Contains("Remove-NetRoute")&&!script.Contains("Disable-NetAdapter")&&!script.Contains("Set-NetFirewallProfile"),"unscoped network mutation");
             Require(script.Contains("-PolicyStore ActiveStore")&&script.Contains("128.0.0.0/1")&&rollback.Contains("Adapter identity changed"),"scoped ownership missing");
             Console.WriteLine("PASS transaction faults, recovery order, exact adapter ownership");
+            MockCmdlets.Run(p);
             foreach(string mode in new[]{"owner-crash","stall","watcher-crash","retry"})await FixtureProcessTest(mode);
             Console.WriteLine("All offline network checks passed; no OS networking or physical USB used.");return 0;
         }catch(Exception e){Console.Error.WriteLine(e);return 1;}

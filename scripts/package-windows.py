@@ -1,6 +1,7 @@
 """Build a per-user MSI from the published folder; never install it automatically."""
 import hashlib
 import argparse
+import json
 import uuid
 import subprocess
 import xml.etree.ElementTree as ET
@@ -13,6 +14,12 @@ args=parser.parse_args()
 publish=args.publish_dir.resolve()
 if any(not (publish/name).is_file() for name in ('TetherMax.exe','tethermax-engine.exe','network-audit.ps1','TetherMax.Network.exe','wintun.dll','WINTUN-LICENSE.txt')):
  raise SystemExit('Fresh desktop, engine, network guardian, pinned Wintun and notices required before packaging')
+for app in ('TetherMax','TetherMax.Network'):
+ config=json.loads((publish/(app+'.runtimeconfig.json')).read_text(encoding='utf-8'))
+ if not config.get('runtimeOptions',{}).get('includedFrameworks'):
+  raise SystemExit(app+' must be published self-contained before MSI packaging')
+if hashlib.sha256((publish/'wintun.dll').read_bytes()).hexdigest()!='e5da8447dc2c320edc0fc52fa01885c103de8c118481f683643cacc3220dafce':
+ raise SystemExit('Bundled official Wintun DLL checksum mismatch')
 ns='http://wixtoolset.org/schemas/v4/wxs'
 ET.register_namespace('',ns)
 def add(parent,tag,**attrs): return ET.SubElement(parent,'{'+ns+'}'+tag,attrs)

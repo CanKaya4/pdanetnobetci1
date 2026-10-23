@@ -2,6 +2,7 @@ name: Isolated Windows routing and crash recovery
 on:
   push:
     branches: [tethermax-foundation]
+    paths: ['host/**', 'engine/**', 'windows/**', '.github/workflows/network-isolated.yml']
   workflow_dispatch:
 permissions:
   contents: read
