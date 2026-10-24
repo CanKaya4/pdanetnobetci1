@@ -36,6 +36,7 @@ Galaxy A56 / Android 16 ve Windows 11 üzerinde:
 | --- | ---: | ---: |
 | 0.6.0 kayıtlı cihaz | 16,14 sn | 16,56 sn |
 | 0.7 geliştirme paketi, Android servisi kapalı | 10,96 sn | 11,46 sn |
+| Son kurulu 0.7 / f197610, çift tıklama | 12,02 sn | 12,55 sn |
 
 Her iki örnekte HTTPS 200, sistem DNS ve doğrudan UDP/DNS başarılıdır. Süreler düğmeye basılmasından itibaren ölçülür ve kullanıcı/UAC beklemesini içerir. Aynı koşullarda çoklu A/B dağılımı değildir; genel hızlanma veya başarısızlık oranı kanıtlamaz. İlk 0.7 denemesi Activity yeniden kullanım hatası nedeniyle 30 sn servis zaman aşımıyla başarısız oldu; ağ değiştirilmedi. Hata düzeltildikten sonra yukarıdaki soğuk başlangıç geçti.
 
@@ -66,3 +67,17 @@ Manuel ağ kurtarma: önce TetherMax penceresini kapatın. Sonra yönetici Power
 Araç etkin guardian varken yeni kurtarmayı reddeder; ilgisiz adaptörleri sıfırlamaz. Kurtarma kopyası/SYSTEM görevi sohbetten bağımsız çalışır. Kurtarma tamamlanmıyorsa yeni bağlantı başlatmayın; mevcut korumalı oturum kaydı üzerinden teşhis yapın.
 
 Windows'ta 0.6 MSI daha düşük sürüm olduğu için önce yalnızca Windows TetherMax 0.7 paketini kaldırmak, sonra saklanan 0.6 MSI'yı kurmak gerekebilir. Kullanıcı kimlik dizinini silmeyin. Android uygulamasını kaldırmayın. `scripts/build-android-rollback.ps1`, checkpoint kaynaklarından aynı imzayla ileri `versionCode=8` taşıyan 0.6 geri dönüş APK'sı üretir. Bu paket hazırlanıp imzası doğrulanır, otomatik kurulmaz. Böylece Android sürüm düşürme engeline karşı anahtarları silmeden üzerine dönüş yolu vardır. Geri dönüş paketinden sonra tekrar 0.7 kurulacaksa yeni APK'nın sürüm kodu 8'den büyük olmalıdır.
+
+## Son paket kabulü ve koordineli devir
+
+Son paket Windows `0.7.0+f197610e2d26dac5ad25aa6c4559285504abef41` ve Android `0.7.0 / code 7` olarak kuruldu. Kurulu Windows uygulama/guardian DLL hash'leri ve telefondan tekrar çekilen APK hash'i teslim paketleriyle eşleşti. Go binary build bilgisi `vcs.revision=f197610`, `vcs.modified=false` gösterir. Şifreli Windows `identity.bin` dosyası başlangıç yedeğiyle birebir aynı kaldı.
+
+Son kurulu pakette çift Bağlan tıklaması yalnızca bir deneme oluşturdu. Telefon 193 ms, servis hazırlığı 238 ms, eşleştirme 95 ms olarak gözlendi. Worker/Wintun hazır bildirimi 5,64 sn, ağ etkin bildirimi 11,05 sn, uygulamanın sağlıklı bağlantı bildirimi 11,63 sn idi. Bağımsız rota + sağlık denetimi 12,55 sn içinde tamamlandı. UAC beklemesi bu sürelerin içindedir.
+
+Kullanıcı, canlı işlemlerin “Düzelt MyPublicWiFi TV paylaşımını” sohbetine devrini onayladı. Bu nedenle son kurulu paketin arayüzünden canlı profil seçimi ve sahip olunan forward kaybından otomatik toparlanma testleri bu sohbette başlatılmadı. Etkin bağlantı açık bırakıldı; diğer sohbetin paylaşım kaynak değişiklikleri 0.7 commitine veya paketlerine dahil edilmedi.
+
+Kod commitinin GitHub Actions kontrolleri geçti:
+- [Java/Go, APK ve Windows derlemeleri ile izole testler](https://github.com/CanKaya4/pdanetnobetci1/actions/runs/40075902201)
+- [Ayrı Windows runner üzerinde gerçek Wintun/WFP ve çökme kurtarması](https://github.com/CanKaya4/pdanetnobetci1/actions/runs/40075898862)
+
+Yerel APK mevcut kurulu imza anahtarıyla üretilmiştir. CI'da bağımsız üretilen geliştirme imzalı APK, bu cihazın güncelleme kimliğiyle aynı kabul edilmemelidir; kontrollü güncellemede hash'i kayıtlı yerel teslim APK'sı kullanılır.
