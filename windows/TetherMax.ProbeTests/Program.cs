@@ -1,0 +1,11 @@
+int delays=0;
+var gone=RemovalVerifier.Wait(()=>false,3,()=>delays++);
+if(gone.StillPresent||gone.InitiallyPresent||delays!=0)throw new Exception("Absent device must pass immediately");
+Console.WriteLine("PASS already absent device requires no extra action");
+int observations=0;delays=0;
+var pending=RemovalVerifier.Wait(()=>++observations<3,4,()=>delays++);
+if(!pending.InitiallyPresent||pending.StillPresent||pending.Polls!=2||delays!=2)throw new Exception("Asynchronous removal was misclassified");
+Console.WriteLine("PASS asynchronous Windows removal eventually succeeds");
+delays=0;var stuck=RemovalVerifier.Wait(()=>true,3,()=>delays++);
+if(!stuck.StillPresent||stuck.Polls!=3||delays!=3)throw new Exception("Stuck device must stop at bound");
+Console.WriteLine("PASS persistent device remains an error after bounded observation");

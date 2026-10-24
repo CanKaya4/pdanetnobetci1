@@ -1,0 +1,10 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType><TargetFramework>net9.0-windows</TargetFramework>
+    <UseWPF>true</UseWPF><UseWindowsForms>true</UseWindowsForms><Nullable>enable</Nullable><ImplicitUsings>enable</ImplicitUsings>
+    <AssemblyName>TetherMax</AssemblyName><EnableDefaultApplicationDefinition>false</EnableDefaultApplicationDefinition>
+    <Version>1.0.0-rc.1</Version><ApplicationIcon>Assets/tethermax.ico</ApplicationIcon><Product>TetherMax USB Preview</Product>
+  </PropertyGroup>
+  <ItemGroup><EmbeddedResource Include="Assets/tethermax.png" LogicalName="TetherMax.Brand" /></ItemGroup><ItemGroup><Content Include="Assets/*.ico" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" /></ItemGroup><ItemGroup><PackageReference Include="System.Security.Cryptography.ProtectedData" Version="9.0.0" /></ItemGroup>
+  <ItemGroup><Content Include="../../scripts/network-audit.ps1" Link="network-audit.ps1" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" /><Content Include="../../scripts/sharing-audit.ps1" Link="sharing-audit.ps1" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" /></ItemGroup>
+<ItemGroup><Using Remove="System.Windows.Forms"/><Using Remove="System.Drawing"/></ItemGroup></Project>
