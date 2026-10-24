@@ -36,3 +36,16 @@ Yönetici kurtarma ön kontrolü exit 0. Gerçek paylaşım, TV videosu, hotspot
 - [PdaNet USB Mode / Hide Tether Usage](https://pdanet.co/help/devices.php)
 
 PdaNet resmi belgeleri USB ve WiFi Share davranışını açıklar; özel gizleme algoritmasını açıklamaz ve Türk Telekom tarife sınıflandırmasının kanıtı değildir. TetherMax CELLULAR TCP/UDP/DNS soketlerini kullanır; TTL/başlık değişikliği eklenmez. Aboneye özgü yazılı tarife ve doğrulanmış operatör sayaçları olmadan kota bağımsızlığı belirsiz kalır.
+
+## 1.0 RC canlı kabul sonucu — 24 Ekim 2026
+
+- Kaynak 89ac590; 1.0.0-rc.1 Windows MSI ve Android APK kuruldu. MSI exit 0; APK install -r Success. Kurulu Desktop/Network DLL SHA-256 değerleri paketle eşleşti. Windows DPAPI identity.bin yedekle aynı kaldı. Yeniden eşleştirme kodu gerekmedi.
+- Sabit Wintun adı ve gerçek GUID: TetherMax-IP-7f568777 / 7f568777-013f-4a46-9436-544554484552. Yeni sürümde gerçek Windows HTTPS 200, sistem DNS ve doğrudan UDP/DNS başarılı. Kanıt yerel build/reports/rc1-windows-live.json. Bu kayıt uygulama başlatma süresi dağılımı değildir.
+- Android gerçek ekranı incelendi: Windows bağlı, CELLULAR Network 212 / rmnet0, gerçek sayaçlar ve Oyun profili göründü; boş/siyah ekran değildi. Windows gerçek ana/paylaşım ekranları görüntülendi. Paylaşım adaptörü seçicisinin koyu temada metin kontrastı yetersiz; görsel eksik olarak bırakıldı.
+- MyPublicWiFi No Internet Sharing erişim noktası Wi-Fi radyosu açıldıktan sonra başladı. TetherMax Paylaşımı başlat komutu UAC ile exit 0 döndü. Private adaptörde Windows ICS 192.168.137.1/24 ve DHCP/DNS svchost dinleyicileri gözlendi. IPv4/IPv6 IPFORWARD filtre kurulum çağrısı başarılı oldu; bu, gerçek TV yolunun kanıtı değildir.
+- TV tekrar denemelerinde WLAN günlüğü WPA2/AES kimlik doğrulamasını başarılı gösterdi; kullanıcı TV'nin bağlanıyor aşamasında kalıp bağlanamadı dediğini bildirdi. Otomatik IP/bağlantı kabulü başarısız, video oynatılmadı. Elle IP tanılama seçeneği kullanıcı tarafından bulunamadı; başarılı manuel veya DHCP kabulü yoktur. Kök neden paket düzeyinde henüz doğrulanmadı; DHCP veya MyPublicWiFi uyumluluğu kesin çözülmüş sayılmaz.
+- Sınırlı gözlem aralığında Wintun sayaçları arttı, Ethernet 5/RNDIS gönderme ve alma farkları sıfırdı. Bu toplam sayaç kaydı TV trafiğinin kanıtı değildir. Yerel build/reports/tv-before.json ve tv-after.json.
+- Standart Android USB tethering başlangıçta rndis0 TetheredState idi; kapalı kullanım bu çalışmada sınanmadı. Wi-Fi hotspot-off ve operatör kota bağımsızlığı kabulü tamamlanmadı.
+- Önceki 0.7 normal kapanışı bu güncellemeden önce kurtarıldı; RNDIS rotasına dönüş ve guardian/worker kapanışı kontrol edilmeden MSI kurulmadı. Yeni ICS etkin oturumunun kapanma/yeniden bağlanma kabul testi henüz yapılmadı. İzole paylaşım geri dönüş testleri bu canlı kabulün yerine geçmez.
+
+Kullanıcı kullanım hakkı nedeniyle hızlı tamamlanmasını istedi. Yeni uzun test, veri yükü veya tahmine dayalı ağ değişikliği başlatılmadı. Windows bağlantısı ve mevcut kurulum bırakıldı. A-H tamamlanmadığından günlük TV kullanımına hazır final 1.0 kabulü VERİLMEDİ. Türk Telekom hotspot kotası BELİRSİZ. APK/MSI yerel build/artifacts altında; hassas ham ağ/cihaz kayıtları Git'e eklenmez.
