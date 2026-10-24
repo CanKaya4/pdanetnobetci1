@@ -20,6 +20,8 @@ internal sealed class SystemNetwork: IAsyncDisposable
     Task? heartbeat,read;
     readonly object disposeGate=new();Task? disposal;
     public bool Active {get;private set;}
+    public string? SessionFolder {get;private set;}
+    public string SharingStatus {get;private set;}="Windows paylaşımı etkin değil.";
     public SystemNetwork()
     {
         string name="TetherMax-Network-"+Guid.NewGuid().ToString("N");
@@ -44,7 +46,7 @@ internal sealed class SystemNetwork: IAsyncDisposable
         var writer=new StreamWriter(pipe,new UTF8Encoding(false),4096,true){AutoFlush=true,NewLine="\n"};
         await writer.WriteLineAsync(JsonSerializer.Serialize(new{Transport=transport,Token=token,MaxSeconds=maxSeconds,MaxPayloadBytes=maxSeconds==0?0L:1048576L,Profile=settings?.Mode??"auto",UploadMbps=settings?.UploadMbps??0,DownloadMbps=settings?.DownloadMbps??0,Adaptive=settings?.Adaptive??false}));token="";
         heartbeat=Task.Run(async()=>{try{while(!stop.IsCancellationRequested){await writer.WriteLineAsync("heartbeat");await Task.Delay(1000,stop.Token);}}catch{}finally{try{writer.Dispose();}catch{}}});
-        read=Task.Run(async()=>{try{using var reader=new StreamReader(pipe,Encoding.UTF8,false,4096,true);while(await reader.ReadLineAsync(stop.Token) is string line){using var doc=JsonDocument.Parse(line);var item=doc.RootElement;string type=item.GetProperty("type").GetString()??"";if(type=="network-active")Active=true;if(type=="network-stopped")Active=false;report(line);}}catch(Exception e){if(!stop.IsCancellationRequested)report("Ağ yardımcısı bağlantısı kapandı: "+e.Message);}finally{Active=false;if(!stop.IsCancellationRequested)report(JsonSerializer.Serialize(new{type="network-channel-closed"}));}});
+        read=Task.Run(async()=>{try{using var reader=new StreamReader(pipe,Encoding.UTF8,false,4096,true);while(await reader.ReadLineAsync(stop.Token) is string line){using var doc=JsonDocument.Parse(line);var item=doc.RootElement;string type=item.GetProperty("type").GetString()??"";if(type=="network-active"){Active=true;SessionFolder=item.GetProperty("session").GetString();}if(type=="sharing-state")SharingStatus=item.GetProperty("configured").GetBoolean()?"Windows ICS kaynağı: TetherMax · IPFORWARD koruması gözlendi · TV testi gerekli":"Windows paylaşımı etkin değil.";if(type=="sharing-error")SharingStatus="Paylaşım güvenlik hatası: "+item.GetProperty("message").GetString();if(type=="network-stopped"){Active=false;SharingStatus="TetherMax bağlantısı kapalı; paylaşım kurtarma sonucunu denetleyin.";}report(line);}}catch(Exception e){if(!stop.IsCancellationRequested)report("Ağ yardımcısı bağlantısı kapandı: "+e.Message);}finally{Active=false;if(!stop.IsCancellationRequested)report(JsonSerializer.Serialize(new{type="network-channel-closed"}));}});
     }
     public ValueTask DisposeAsync() {lock(disposeGate)return new ValueTask(disposal??=DisposeCore());}
     async Task DisposeCore()

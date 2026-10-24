@@ -115,6 +115,7 @@ class Program
             Require(script.Contains("-PolicyStore ActiveStore")&&script.Contains("128.0.0.0/1")&&rollback.Contains("Adapter identity changed"),"scoped ownership missing");
             Console.WriteLine("PASS transaction faults, recovery order, exact adapter ownership");
             MockCmdlets.Run(p);
+            SharingChecks.Run(p);
             string metadataFolder=Path.Combine(Path.GetTempPath(),"TetherMax-record-"+Guid.NewGuid().ToString("N")+"-ö'path");Directory.CreateDirectory(metadataFolder);
             var metadataJournal=new Journal(metadataFolder,false);
             NativeBackend.PowerShell(NativeBackend.ExecutorRecordScript(metadataJournal));

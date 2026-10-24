@@ -53,8 +53,8 @@ internal sealed partial class Dashboard : Window
     string EnginePath => Path.Combine(root,"tethermax-engine.exe");
     public Dashboard(bool preview=false,bool manualStart=false)
     {
-        InitializeComponent(); DataContext=connection;
-        Title="TetherMax 0.7 · USB bağlantısı"; Width=960;Height=900;MinWidth=760;MinHeight=650;
+        InitializeComponent(); DataContext=connection; SharingHost.Content=new SharingPanel(()=>systemNetwork);
+        Title="TetherMax 1.0 RC · USB bağlantısı"; Width=960;Height=900;MinWidth=760;MinHeight=650;
         Background=UiTheme.Background;
         var panel=new StackPanel { Margin=new Thickness(28) }; HomeHost.Content=panel;
         var brand=new StackPanel{Orientation=Orientation.Horizontal};brand.Children.Add(new System.Windows.Controls.Image{Source=BrandLogo.Load(),Width=52,Height=52,Margin=new Thickness(0,0,14,0)});brand.Children.Add(new TextBlock{Text="TetherMax",FontSize=36,FontWeight=FontWeights.Bold,Foreground=UiTheme.Ink});panel.Children.Add(brand);

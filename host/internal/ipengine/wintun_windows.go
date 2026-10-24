@@ -4,7 +4,6 @@ package ipengine
 
 import (
 	"context"
-	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
@@ -21,6 +20,12 @@ import (
 )
 
 const WintunSHA256 = "e5da8447dc2c320edc0fc52fa01885c103de8c118481f683643cacc3220dafce"
+
+// A fixed requested GUID keeps Windows NLA and sharing source identity stable
+// across sessions. Never open/adopt an existing adapter: a collision must fail
+// rather than configure an adapter whose ownership has not been established.
+const WintunAdapterName = "TetherMax-IP-7f568777"
+const WintunAdapterGUID = "{7F568777-013F-4A46-9436-544554484552}"
 
 type WintunDevice struct {
 	Name                                                string
@@ -82,12 +87,11 @@ func CreateWintun(dllPath string, approved bool, prepared ...func(string, string
 	if closeErr != nil {
 		return nil, fmt.Errorf("release signature verification: %w", closeErr)
 	}
-	salt := make([]byte, 16)
-	if _, err = rand.Read(salt); err != nil {
+	guid, err := windows.GUIDFromString(WintunAdapterGUID)
+	if err != nil {
 		return nil, err
 	}
-	d := &WintunDevice{Name: "TetherMax-IP-" + hex.EncodeToString(salt[:4])}
-	copy(unsafe.Slice((*byte)(unsafe.Pointer(&d.GUID)), 16), salt)
+	d := &WintunDevice{Name: WintunAdapterName, GUID: guid}
 	if len(prepared) > 0 {
 		if err := prepared[0](d.Name, d.GUID.String()); err != nil {
 			return nil, err
@@ -98,8 +102,8 @@ func CreateWintun(dllPath string, approved bool, prepared ...func(string, string
 		return nil, err
 	}
 	find := func(name string) (*windows.Proc, error) { return d.dll.FindProc(name) }
-	var create, start, getEvent *windows.Proc
-	for name, dest := range map[string]**windows.Proc{"WintunCreateAdapter": &create, "WintunStartSession": &start, "WintunGetReadWaitEvent": &getEvent, "WintunReceivePacket": &d.receive, "WintunReleaseReceivePacket": &d.release, "WintunAllocateSendPacket": &d.allocate, "WintunSendPacket": &d.send, "WintunEndSession": &d.end, "WintunCloseAdapter": &d.closeAdapter} {
+	var create, start, getEvent, getLuid *windows.Proc
+	for name, dest := range map[string]**windows.Proc{"WintunCreateAdapter": &create, "WintunGetAdapterLUID": &getLuid, "WintunStartSession": &start, "WintunGetReadWaitEvent": &getEvent, "WintunReceivePacket": &d.receive, "WintunReleaseReceivePacket": &d.release, "WintunAllocateSendPacket": &d.allocate, "WintunSendPacket": &d.send, "WintunEndSession": &d.end, "WintunCloseAdapter": &d.closeAdapter} {
 		*dest, err = find(name)
 		if err != nil {
 			d.dll.Release()
@@ -117,6 +121,21 @@ func CreateWintun(dllPath string, approved bool, prepared ...func(string, string
 	if d.adapter == 0 {
 		d.Close()
 		return nil, fmt.Errorf("create owned adapter: %w", err)
+	}
+	// RequestedGUID is a request, not evidence of the resulting interface ID.
+	// Check the actual Windows identity before handing ownership to the guardian.
+	var luid uint64
+	getLuid.Call(d.adapter, uintptr(unsafe.Pointer(&luid)))
+	var actual windows.GUID
+	convert := windows.NewLazySystemDLL("iphlpapi.dll").NewProc("ConvertInterfaceLuidToGuid")
+	if err := convert.Find(); err != nil {
+		d.Close()
+		return nil, err
+	}
+	code, _, _ := convert.Call(uintptr(unsafe.Pointer(&luid)), uintptr(unsafe.Pointer(&actual)))
+	if code != 0 || actual != d.GUID {
+		d.Close()
+		return nil, fmt.Errorf("Wintun requested identity not established (Windows status %d)", code)
 	}
 	d.session, _, err = start.Call(d.adapter, 0x400000)
 	if d.session == 0 {

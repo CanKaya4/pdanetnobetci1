@@ -53,7 +53,7 @@ public sealed class Wfp:IDisposable
             Check(FwpmTransactionCommit0(engine));
         }catch{FwpmTransactionAbort0(engine);throw;}finally{Marshal.FreeHGlobal(name);}
     }
-    void Add(Plan p,Guid key,Guid layer,bool ipv4,IntPtr name)
+    void Add(Plan p,Guid key,Guid layer,bool ipv4,IntPtr name,uint privateIndex=0)
     {
         // FLAGS_NONE_SET(IS_LOOPBACK): ADB/private IPC stays on loopback.
         // NOT_EQUAL owned LUID: all other IPv4 egress is blocked, including
@@ -67,6 +67,10 @@ public sealed class Wfp:IDisposable
         list.Add(new Condition{Key=new Guid("b235ae9a-1d64-49b8-a44c-5ff3d9095045"),Match=10,
             Value=ipv4?new Value{Type=3,Data=0x7f000001}:new Value{Type=11,Data=unchecked((ulong)loopback.ToInt64())}});
         if(ipv4)list.Add(new Condition{Key=new Guid("4cd62a49-59c3-4969-b7f3-bda5d32890a4"),Match=10,Value=new Value{Type=4,Data=unchecked((ulong)luid.ToInt64())}});
+        // Different fields deliberately express AND, avoiding WFP's OR handling
+        // of consecutive conditions for the same field. Only the selected local
+        // hotspot interface is exempt for DHCP/DNS/replies to its clients.
+        if(ipv4&&privateIndex!=0)list.Add(new Condition{Key=new Guid("667fd755-d695-434a-8af5-d3835a1259bc"),Match=10,Value=new Value{Type=3,Data=privateIndex}});
         IntPtr conditions=Marshal.AllocHGlobal(Marshal.SizeOf<Condition>()*list.Count);
         try {
             for(int i=0;i<list.Count;i++)Marshal.StructureToPtr(list[i],conditions+i*Marshal.SizeOf<Condition>(),false);
@@ -75,11 +79,37 @@ public sealed class Wfp:IDisposable
             Check(FwpmFilterAdd0(engine,ref f,IntPtr.Zero,out _));
         }finally{Marshal.FreeHGlobal(conditions);Marshal.FreeHGlobal(luid);Marshal.FreeHGlobal(loopback);}
     }
-    public void Remove(Plan p)
+    public void Sharing(Plan p,SharingState s,bool enabled)
+    {
+        s.Validate(p);Check(FwpmTransactionBegin0(engine,0));
+        IntPtr name=Marshal.StringToHGlobalUni(p.Tag+"-TV");
+        try {
+            Guid v4=p.V4Filter;Check(FwpmFilterDeleteByKey0(engine,ref v4));
+            Add(p,p.V4Filter,new Guid("1e5c9fae-8a84-4135-a331-950b54229ecd"),true,name,enabled?s.PrivateIndex:0);
+            foreach(Guid key in new[]{s.ForwardV4,s.ForwardV6}){var id=key;Deleted(FwpmFilterDeleteByKey0(engine,ref id),0x80320003);}
+            if(enabled){Forward(p,s,s.ForwardV4,new Guid("a82acc24-4ee1-4ee1-b465-fd1d25cb10a4"),true,name);Forward(p,s,s.ForwardV6,new Guid("7b964818-19c7-493a-b71f-832c3684d28c"),false,name);}
+            Check(FwpmTransactionCommit0(engine));
+        }catch{FwpmTransactionAbort0(engine);throw;}finally{Marshal.FreeHGlobal(name);}
+    }
+    void Forward(Plan p,SharingState s,Guid key,Guid layer,bool ipv4,IntPtr name)
+    {
+        IntPtr source=Marshal.AllocHGlobal(8),destination=Marshal.AllocHGlobal(8),conditions=IntPtr.Zero;
+        try{
+            Marshal.WriteInt64(source,unchecked((long)s.PrivateLuid));Marshal.WriteInt64(destination,unchecked((long)p.Luid));
+            var list=new List<Condition>{new(){Key=new Guid("4cd62a49-59c3-4969-b7f3-bda5d32890a4"),Match=0,Value=new Value{Type=4,Data=unchecked((ulong)source.ToInt64())}}};
+            if(ipv4)list.Add(new(){Key=new Guid("1076b8a5-6323-4c5e-9810-e8d3fc9e6136"),Match=10,Value=new Value{Type=4,Data=unchecked((ulong)destination.ToInt64())}});
+            conditions=Marshal.AllocHGlobal(Marshal.SizeOf<Condition>()*list.Count);
+            for(int i=0;i<list.Count;i++)Marshal.StructureToPtr(list[i],conditions+i*Marshal.SizeOf<Condition>(),false);
+            var f=new Filter{Key=key,Display=new Display{Name=name},Flags=1,Layer=layer,Sublayer=p.Id,Weight=new Value{Type=1,Data=15},Count=(uint)list.Count,Conditions=conditions,Action=new ActionType{Type=0x1001}};
+            Check(FwpmFilterAdd0(engine,ref f,IntPtr.Zero,out _));
+        }finally{if(conditions!=IntPtr.Zero)Marshal.FreeHGlobal(conditions);Marshal.FreeHGlobal(source);Marshal.FreeHGlobal(destination);}
+    }
+    public void Remove(Plan p,SharingState? sharing=null)
     {
         Check(FwpmTransactionBegin0(engine,0));
         try {
             Guid a=p.V4Filter,b=p.V6Filter,c=p.Id;
+            if(sharing!=null){sharing.Validate(p);foreach(Guid key in new[]{sharing.ForwardV4,sharing.ForwardV6}){var id=key;Deleted(FwpmFilterDeleteByKey0(engine,ref id),0x80320003);}}
             Deleted(FwpmFilterDeleteByKey0(engine,ref a),0x80320003);
             Deleted(FwpmFilterDeleteByKey0(engine,ref b),0x80320003);
             Deleted(FwpmSubLayerDeleteByKey0(engine,ref c),0x80320007);

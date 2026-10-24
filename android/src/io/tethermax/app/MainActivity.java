@@ -114,7 +114,7 @@ public final class MainActivity extends Activity {
         ScrollView scroll = new ScrollView(this); scroll.setFillViewport(true); scroll.setBackgroundColor(Color.parseColor(dark ? "#101827" : "#EFF3F8"));
         content = new LinearLayout(this); content.setOrientation(LinearLayout.VERTICAL); content.setPadding(dp(20), dp(28), dp(20), dp(28)); scroll.addView(content);
         LinearLayout brand=new LinearLayout(this);brand.setGravity(Gravity.CENTER_VERTICAL);ImageView logo=new ImageView(this);logo.setImageResource(getResources().getIdentifier("tethermax","drawable",getPackageName()));brand.addView(logo,new LinearLayout.LayoutParams(dp(52),dp(52)));TextView title=text("  TetherMax",32,ink);title.setTypeface(null,Typeface.BOLD);brand.addView(title);content.addView(brand);
-        content.addView(text("Güvenli USB internet · 0.7.0", 14, muted));
+        content.addView(text("Güvenli USB internet · 1.0.0-rc.1", 14, muted));
         LinearLayout connection = card("BAĞLANTI"); status = text(TunnelService.status, 22, ink); connection.addView(status);
         homeTraffic=text("Windows istemcisi bekleniyor",16,muted);connection.addView(homeTraffic);
         action(connection, "Hücresel motoru başlat", () -> {

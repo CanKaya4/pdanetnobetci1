@@ -29,6 +29,7 @@ public sealed class NativeBackend:IBackend
             (applying?"if(Test-Path -LiteralPath '"+complete+"'){throw 'Session already recovered'};":"")+record+commands+"}finally{$lock.Dispose()}";
         PowerShell(script);
     }
+    public void SharingCommands(string commands,bool applying)=>ExecuteOwned(commands,applying);
     public static string Adapter(Plan p)=>"$a=@(Get-NetAdapter -IncludeHidden | Where-Object { [guid]$_.InterfaceGuid -eq [guid]'"+p.AdapterGuid+"' }); "+
         "if($a.Count -gt 1){throw 'Ambiguous adapter'}; if($a.Count -eq 1 -and $a[0].Name -ne '"+p.AdapterName+"'){throw 'Adapter identity changed'}; ";
     public static string ConfigureScript(Plan p)
@@ -74,6 +75,6 @@ public sealed class NativeBackend:IBackend
     }
     public void Guard(Plan p){using var wfp=new Wfp();wfp.Install(p);}
     public void Configure(Plan p)=>ExecuteOwned(ConfigureScript(p),true);
-    public void RemoveConfiguration(Plan p)=>ExecuteOwned(RemoveScript(p),false);
-    public void RemoveGuard(Plan p){using var wfp=new Wfp();wfp.Remove(p);}
+    public void RemoveConfiguration(Plan p){OwnedSharing.Stop(journal,p,this);ExecuteOwned(RemoveScript(p),false);}
+    public void RemoveGuard(Plan p){using var wfp=new Wfp();wfp.Remove(p,OwnedSharing.Read(journal,p));}
 }
