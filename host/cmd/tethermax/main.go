@@ -12,6 +12,9 @@ import (
 )
 
 func run(args []string) error {
+	if len(args) > 0 && args[0] == "profile-set" {
+		return runProfile(args[1:])
+	}
 	if len(args) > 0 && args[0] == "cellular-status" {
 		return runCellularStatus(args[1:])
 	}
@@ -28,7 +31,7 @@ func run(args []string) error {
 		return runIP(args[1:], false)
 	}
 	if len(args) == 0 || args[0] == "status" {
-		fmt.Println("TetherMax 0.5.0-engine: inactive. No OS changes. Wintun data worker and separately approved Windows network guardian available; use the GUI for explicit routing consent.")
+		fmt.Println("TetherMax 0.7.0-engine: inactive. No OS changes. Wintun data worker and separately approved Windows network guardian available; use the GUI for explicit routing consent.")
 		return nil
 	}
 	if args[0] != "serve" {

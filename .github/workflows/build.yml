@@ -73,6 +73,8 @@ jobs:
         run: |
           dotnet run --project windows/TetherMax.PairingTests -c Release
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          dotnet run --project windows/TetherMax.ConnectionTests -c Release
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           dotnet run --project windows/TetherMax.ProbeTests -c Release
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           dotnet publish windows/TetherMax.Desktop -c Release -r win-x64 --self-contained true -o build/windows-desktop

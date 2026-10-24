@@ -98,6 +98,7 @@ public static class Program
             string identity=await worker.StandardOutput.ReadLineAsync(readyTimeout.Token)??throw new IOException("IP worker readiness missing");
             using var json=JsonDocument.Parse(identity);var root=json.RootElement;
             Guid guid=Guid.Parse(root.GetProperty("guid").GetString()!);string name=root.GetProperty("adapter").GetString()!;
+            await Send(new{type="worker-ready",adapter=name});
             using var self=Process.GetCurrentProcess();
             plan=new Plan(id,guid,name,Wfp.Luid(guid),Guid.NewGuid(),Guid.NewGuid(),self.Id,self.StartTime.ToUniversalTime().Ticks,worker.Id,worker.StartTime.ToUniversalTime().Ticks);
             var backend=new NativeBackend(journal);

@@ -18,7 +18,7 @@ internal sealed class SystemNetwork: IAsyncDisposable
     readonly CancellationTokenSource stop=new();
     Process? guardian;
     Task? heartbeat,read;
-    int disposed;
+    readonly object disposeGate=new();Task? disposal;
     public bool Active {get;private set;}
     public SystemNetwork()
     {
@@ -31,28 +31,28 @@ internal sealed class SystemNetwork: IAsyncDisposable
         pipe=NamedPipeServerStreamAcl.Create(name,PipeDirection.InOut,1,PipeTransmissionMode.Byte,PipeOptions.Asynchronous,4096,4096,acl);
     }
     string Name {get;}
-    public async Task Start(string folder,string transport,string token,Action<string> report,int maxSeconds=120,TrafficSettings? settings=null)
+    public async Task Start(string folder,string transport,string token,Action<string> report,int maxSeconds=120,TrafficSettings? settings=null,CancellationToken cancellation=default)
     {
         string helper=Path.Combine(folder,"TetherMax.Network.exe");
         if(!File.Exists(helper)||!File.Exists(Path.Combine(folder,"wintun.dll")))throw new IOException("Native ağ yardımcısı veya doğrulanmış Wintun pakette yok.");
         var start=new ProcessStartInfo(helper){UseShellExecute=true,Verb="runas",WindowStyle=ProcessWindowStyle.Hidden};
         foreach(string arg in new[]{"connect",Name,"--approve-global-route-change","--approve-usb-test"})start.ArgumentList.Add(arg);
         guardian=Process.Start(start)??throw new IOException("Yönetici ağ süreci başlatılamadı.");
-        using var timeout=CancellationTokenSource.CreateLinkedTokenSource(stop.Token);timeout.CancelAfter(TimeSpan.FromSeconds(45));
+        using var timeout=CancellationTokenSource.CreateLinkedTokenSource(stop.Token,cancellation);timeout.CancelAfter(TimeSpan.FromSeconds(45));
         await pipe.WaitForConnectionAsync(timeout.Token);
         if(!GetNamedPipeClientProcessId(pipe.SafePipeHandle,out uint pid)||pid!=guardian.Id)throw new IOException("Ağ yardımcısının IPC kimliği eşleşmiyor.");
         var writer=new StreamWriter(pipe,new UTF8Encoding(false),4096,true){AutoFlush=true,NewLine="\n"};
         await writer.WriteLineAsync(JsonSerializer.Serialize(new{Transport=transport,Token=token,MaxSeconds=maxSeconds,MaxPayloadBytes=maxSeconds==0?0L:1048576L,Profile=settings?.Mode??"auto",UploadMbps=settings?.UploadMbps??0,DownloadMbps=settings?.DownloadMbps??0,Adaptive=settings?.Adaptive??false}));token="";
         heartbeat=Task.Run(async()=>{try{while(!stop.IsCancellationRequested){await writer.WriteLineAsync("heartbeat");await Task.Delay(1000,stop.Token);}}catch{}finally{try{writer.Dispose();}catch{}}});
-        read=Task.Run(async()=>{try{using var reader=new StreamReader(pipe,Encoding.UTF8,false,4096,true);while(await reader.ReadLineAsync(stop.Token) is string line){using var doc=JsonDocument.Parse(line);var item=doc.RootElement;string type=item.GetProperty("type").GetString()??"";if(type=="network-active")Active=true;if(type=="network-stopped")Active=false;report(line);}}catch(Exception e){if(!stop.IsCancellationRequested)report("Ağ yardımcısı bağlantısı kapandı: "+e.Message);}finally{Active=false;}});
+        read=Task.Run(async()=>{try{using var reader=new StreamReader(pipe,Encoding.UTF8,false,4096,true);while(await reader.ReadLineAsync(stop.Token) is string line){using var doc=JsonDocument.Parse(line);var item=doc.RootElement;string type=item.GetProperty("type").GetString()??"";if(type=="network-active")Active=true;if(type=="network-stopped")Active=false;report(line);}}catch(Exception e){if(!stop.IsCancellationRequested)report("Ağ yardımcısı bağlantısı kapandı: "+e.Message);}finally{Active=false;if(!stop.IsCancellationRequested)report(JsonSerializer.Serialize(new{type="network-channel-closed"}));}});
     }
-    public async ValueTask DisposeAsync()
+    public ValueTask DisposeAsync() {lock(disposeGate)return new ValueTask(disposal??=DisposeCore());}
+    async Task DisposeCore()
     {
-        if(Interlocked.Exchange(ref disposed,1)!=0)return;
         stop.Cancel();pipe.Dispose();
         if(heartbeat!=null)await heartbeat;if(read!=null)await read;
         // Closing IPC asks the guardian to recover; never forcibly terminate it.
-        if(guardian!=null){try{using var deadline=new CancellationTokenSource(TimeSpan.FromSeconds(50));await guardian.WaitForExitAsync(deadline.Token);}catch{}guardian.Dispose();}
+        if(guardian!=null){using var deadline=new CancellationTokenSource(TimeSpan.FromSeconds(50));try{await guardian.WaitForExitAsync(deadline.Token);}catch(OperationCanceledException e){throw new IOException("Ağ kurtarması henüz tamamlanmadı; yeni bağlantı güvenli biçimde engellendi.",e);}guardian.Dispose();}
         stop.Dispose();
     }
 }

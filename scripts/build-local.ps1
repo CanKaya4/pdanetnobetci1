@@ -11,7 +11,8 @@ try {
   $out=Join-Path 'build' ('android-'+[guid]::NewGuid().ToString('N'))
   New-Item -ItemType Directory -Force "$out/classes","$out/dex",build/artifacts,build/reports | Out-Null
   function Check { if($LASTEXITCODE){throw "Build command failed: $LASTEXITCODE"} }
-  & "$bt/aapt2.exe" link -o "$out/base.apk" --manifest android/AndroidManifest.xml -I $jar --min-sdk-version 26 --target-sdk-version 35; Check
+  & "$bt/aapt2.exe" compile --dir android/res -o "$out/resources.zip"; Check
+  & "$bt/aapt2.exe" link -o "$out/base.apk" --manifest android/AndroidManifest.xml -I $jar --min-sdk-version 26 --target-sdk-version 35 "$out/resources.zip"; Check
   $src=Get-ChildItem engine/src,android/src -Recurse -Filter *.java | ForEach-Object FullName
   javac -encoding UTF-8 --release 8 -Xlint:all,-options -classpath $jar -d "$out/classes" $src; Check
   $classes=Get-ChildItem "$out/classes" -Recurse -Filter *.class | ForEach-Object FullName

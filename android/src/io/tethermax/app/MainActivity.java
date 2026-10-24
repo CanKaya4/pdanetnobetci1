@@ -16,19 +16,23 @@ public final class MainActivity extends Activity {
     private final Handler handler = new Handler(Looper.getMainLooper());
     private TextView status;
     private LinearLayout content;
+    private final java.util.ArrayList<LinearLayout> cards=new java.util.ArrayList<>();
+    private long startedAt;
     private int ink, muted, surface, accent;
     private String shownCode;
-    private TextView traffic;
+    private TextView traffic,homeTraffic;
     private AlertDialog pairingDialog;
     private TrafficPlot speedPlot,delayPlot;
     private Spinner profile;
+    private final Button[] modeButtons=new Button[5];
+    private static final String[] MODE_DESCRIPTIONS={"Akıllı profil seçimi","Gecikme odaklı öncelikler","Video ve paylaşılan bağlantı","Dengeli kullanım","Aktarım odaklı profil"};
     private static final String[] MODE_IDS={"auto","gaming","streaming","daily","maximum"};
     private static final String[] MODE_LABELS={"Otomatik","Oyun","Film / Dizi","Günlük","Maksimum Hız"};
     private TunnelService sampledService;
     private long sampleAt,lastUp,lastDown;
     private final Runnable refresh = new Runnable() {
         public void run() {
-            status.setText(TunnelService.status);
+            status.setText(TunnelService.status+"\n"+(TunnelService.instance==null?"Bağlantı bekleniyor":("Servis süresi · "+((SystemClock.elapsedRealtime()-TunnelService.startedAt)/1000)+" sn")));
             TunnelService current=TunnelService.instance;
             refreshTraffic(current);
             String code = UsbPairing.pendingCode;
@@ -40,7 +44,9 @@ public final class MainActivity extends Activity {
                     .setMessage("Windows ekranındaki numara aynı mı?\n\n" + code + "\n\nYalnızca kendiniz başlattığınız eşleştirmeyi onaylayın.")
                     .setPositiveButton("Aynı, güven", (d,w) -> UsbPairing.confirm(code,true))
                     .setNegativeButton("Reddet", (d,w) -> UsbPairing.confirm(code,false))
-                    .setOnCancelListener(d -> UsbPairing.confirm(code,false)).show();
+                    .setOnCancelListener(d -> UsbPairing.confirm(code,false)).create();
+                pairingDialog.getWindow().addFlags(WindowManager.LayoutParams.FLAG_SECURE);
+                pairingDialog.show();
             }
             handler.postDelayed(this, 1000);
         }
@@ -64,6 +70,9 @@ public final class MainActivity extends Activity {
                 }catch(JSONException ignored){details="Windows ölçüm kaydı okunamadı";}
             }
         }
+        if(homeTraffic!=null)homeTraffic.setText(TunnelService.networkInfo+"\n"+(Float.isNaN(download)?"Hız ölçümü bekleniyor":String.format(java.util.Locale.ROOT,"↓ %.2f Mbps     ↑ %.2f Mbps",download,upload))+"\nAktarılan toplam · "+(up+down)+" B\nProfil · "+modeLabel(TunnelService.savedMode(this))+"\n"+(relay!=null&&relay.hostTelemetry!=null&&System.nanoTime()-relay.hostTelemetryNanos<5000000000L?"Güvenilen Windows istemcisi bağlı":"Windows istemcisi bekleniyor"));
+        if(relay!=null&&relay.hostTelemetry!=null&&System.nanoTime()-relay.hostTelemetryNanos<5000000000L)status.setText("Windows bağlı\nGüvenli USB aktarımı etkin");
+        for(int i=0;i<modeButtons.length;i++)if(modeButtons[i]!=null)modeButtons[i].setText((MODE_IDS[i].equals(TunnelService.savedMode(this))?"✓ ":"")+MODE_LABELS[i]+"\n"+MODE_DESCRIPTIONS[i]);
         if(traffic!=null)traffic.setText(TunnelService.networkInfo+"\nYükleme: "+up+" B · İndirme: "+down+" B\n"+(Float.isNaN(upload)?"Hız örneği bekleniyor":String.format(java.util.Locale.ROOT,"İndirme %.3f / Yükleme %.3f Mbps",download,upload))+"\n"+details+"\nAktarılan uygulama verisi; operatör faturalandırması değildir.");
         if(speedPlot!=null)speedPlot.add(download,upload);if(delayPlot!=null)delayPlot.add(rtt,jitter);
     }
@@ -78,24 +87,36 @@ public final class MainActivity extends Activity {
         box.setPadding(dp(20), dp(16), dp(20), dp(16));
         GradientDrawable bg = new GradientDrawable(); bg.setColor(surface); bg.setCornerRadius(dp(24)); box.setBackground(bg);
         LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(-1, -2); lp.bottomMargin = dp(16); box.setLayoutParams(lp);
-        TextView label = text(title, 14, accent); label.setTypeface(null, Typeface.BOLD); box.addView(label); content.addView(box); return box;
+        TextView label = text(title, 14, accent); label.setTypeface(null, Typeface.BOLD); box.addView(label); content.addView(box);cards.add(box); return box;
     }
-    private void action(LinearLayout box, String title, Runnable callback) {
-        Button button = new Button(this); button.setText(title); button.setAllCaps(false);
-        button.setTextColor(ink); button.setOnClickListener(v -> callback.run()); box.addView(button, new LinearLayout.LayoutParams(-1, dp(56)));
+    private Button action(LinearLayout box, String title, Runnable callback) {
+        Button button=new Button(this);button.setText(title);button.setAllCaps(false);button.setTextSize(15);
+        boolean primary=title.startsWith("Hücresel");button.setTextColor(primary?(ink==Color.parseColor("#F1F5FC")?Color.parseColor("#082C35"):Color.WHITE):ink);
+        GradientDrawable shape=new GradientDrawable();shape.setColor(primary?accent:Color.parseColor(ink==Color.parseColor("#F1F5FC")?"#28425C":"#DCECF2"));shape.setCornerRadius(dp(18));
+        button.setBackground(new android.graphics.drawable.RippleDrawable(android.content.res.ColorStateList.valueOf(0x3355DCE7),shape,null));button.setElevation(0);button.setStateListAnimator(null);
+        button.setOnClickListener(v->callback.run());LinearLayout.LayoutParams lp=new LinearLayout.LayoutParams(-1,dp(56));lp.topMargin=dp(10);box.addView(button,lp);return button;
     }
+    private void prepareConnection(Intent intent) {
+        if(!intent.getBooleanExtra("prepare_connection",false))return;
+        intent.removeExtra("prepare_connection");
+        if(TunnelService.instance!=null)return;
+        try {PairingStore.get(this);startForegroundService(new Intent(this,TunnelService.class));}
+        catch(Exception e){android.util.Log.e("TetherMax","Servis hazırlanamadı",e);}
+    }
+    @Override protected void onNewIntent(Intent intent){super.onNewIntent(intent);setIntent(intent);prepareConnection(intent);}
     @Override public void onCreate(Bundle saved) {
         super.onCreate(saved);
-        getWindow().addFlags(WindowManager.LayoutParams.FLAG_SECURE);
-        boolean dark = (getResources().getConfiguration().uiMode & Configuration.UI_MODE_NIGHT_MASK) == Configuration.UI_MODE_NIGHT_YES;
+        prepareConnection(getIntent());
+
+        boolean dark = getSharedPreferences("appearance",MODE_PRIVATE).getBoolean("dark",true);
         ink = Color.parseColor(dark ? "#F1F5FC" : "#12213A"); muted = Color.parseColor(dark ? "#ADBBD0" : "#52637B");
         surface = Color.parseColor(dark ? "#19263B" : "#FFFFFF"); accent = Color.parseColor(dark ? "#6DDDC1" : "#007D69");
         ScrollView scroll = new ScrollView(this); scroll.setFillViewport(true); scroll.setBackgroundColor(Color.parseColor(dark ? "#101827" : "#EFF3F8"));
         content = new LinearLayout(this); content.setOrientation(LinearLayout.VERTICAL); content.setPadding(dp(20), dp(28), dp(20), dp(28)); scroll.addView(content);
-        TextView title = text("TetherMax", 34, ink); title.setTypeface(null, Typeface.BOLD); content.addView(title);
-        content.addView(text("USB aktarım motoru · Geliştirme önizlemesi", 14, muted));
+        LinearLayout brand=new LinearLayout(this);brand.setGravity(Gravity.CENTER_VERTICAL);ImageView logo=new ImageView(this);logo.setImageResource(getResources().getIdentifier("tethermax","drawable",getPackageName()));brand.addView(logo,new LinearLayout.LayoutParams(dp(52),dp(52)));TextView title=text("  TetherMax",32,ink);title.setTypeface(null,Typeface.BOLD);brand.addView(title);content.addView(brand);
+        content.addView(text("Güvenli USB internet · 0.7.0", 14, muted));
         LinearLayout connection = card("BAĞLANTI"); status = text(TunnelService.status, 22, ink); connection.addView(status);
-        connection.addView(text("Hücresel servis durumu, Windows bağlantısının veya internet aktarımının doğrulandığı anlamına gelmez.", 14, muted));
+        homeTraffic=text("Windows istemcisi bekleniyor",16,muted);connection.addView(homeTraffic);
         action(connection, "Hücresel motoru başlat", () -> {
             try { PairingStore.get(this); startForegroundService(new Intent(this, TunnelService.class)); }
             catch (Exception e) { error("Güvenli eşleştirme deposu açılamadı. Motor başlatılmadı."); }
@@ -108,19 +129,36 @@ public final class MainActivity extends Activity {
         LinearLayout analysis = card("İNTERNET ANALİZİ");
         traffic = text("Henüz trafik yok", 18, ink); analysis.addView(traffic);
         speedPlot=new TrafficPlot(this,"Mbps",muted);analysis.addView(speedPlot,new LinearLayout.LayoutParams(-1,dp(140)));
-        analysis.addView(text("Mavi indirme · yeşil yükleme. Son 60 gerçek örnek.",12,muted));
+        analysis.addView(text("Mavi indirme · yeşil yükleme. Gerçek örnekler.",12,muted));
         delayPlot=new TrafficPlot(this,"ms",muted);analysis.addView(delayPlot,new LinearLayout.LayoutParams(-1,dp(140)));
         analysis.addView(text("Mavi DNS gidiş-dönüş · yeşil jitter. Ölçüm yoksa grafik boş kalır. Adaptif ölçüm Windows'tan açılır; mobil veri kullanır.",12,muted));
+        Spinner history=new Spinner(this);history.setAdapter(new ArrayAdapter<String>(this,android.R.layout.simple_spinner_dropdown_item,new String[]{"1 dakika","5 dakika","30 dakika"}));analysis.addView(history);history.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener(){public void onNothingSelected(AdapterView<?> p){}public void onItemSelected(AdapterView<?> p,View v,int position,long id){int minutes=new int[]{1,5,30}[position];speedPlot.setMinutes(minutes);delayPlot.setMinutes(minutes);}});
         LinearLayout modes=card("TRAFİK PROFİLİ");
         profile=new Spinner(this);profile.setAdapter(new ArrayAdapter<String>(this,android.R.layout.simple_spinner_dropdown_item,MODE_LABELS));
         String savedMode=TunnelService.savedMode(this);for(int i=0;i<MODE_IDS.length;i++)if(MODE_IDS[i].equals(savedMode))profile.setSelection(i);
-        modes.addView(profile);
+        profile.setVisibility(View.GONE);modes.addView(profile);
+        for(int i=0;i<MODE_IDS.length;i++){final int selected=i;modeButtons[i]=action(modes,MODE_LABELS[i]+"\n"+MODE_DESCRIPTIONS[i],()->profile.setSelection(selected));}
         profile.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener(){public void onNothingSelected(AdapterView<?> parent){}public void onItemSelected(AdapterView<?> parent,View view,int position,long id){TunnelService.requestMode(MainActivity.this,MODE_IDS[position]);}});
         modes.addView(text("Windows bağlandığında seçim aynı USB motorunun zamanlayıcısına iletilir. Manuel seçim otomatik oyun algılamasıyla değiştirilmez. Sistem geneli yönlendirme açılmaz.",14,muted));
-        LinearLayout scope = card("BU SÜRÜMÜN KAPSAMI");
+        LinearLayout scope = card("AYARLAR");
         scope.addView(text("TCP / UDP aktarım motoru", 20, ink));
-        scope.addView(text("Windows'tan TetherMax'e gönderilen TCP/UDP akışları taşınır. Deneysel akış önceliği ve hız tavanı vardır; oyun gecikmesi iyileşmesi henüz kanıtlanmadı. Sistem geneli rota ve MyPublicWiFi aktarımı ayrı doğrulama bekliyor.", 14, muted));
-        setContentView(scroll);
+        scope.addView(text("Ölçümler yalnızca TetherMax aktarımına aittir. Operatör faturalandırması veya oyun performansı için garanti verilmez.", 14, muted));
+        action(scope,"Koyu / açık tema",()->{getSharedPreferences("appearance",MODE_PRIVATE).edit().putBoolean("dark",!dark).apply();recreate();});
+        LinearLayout root=new LinearLayout(this);root.setOrientation(LinearLayout.VERTICAL);
+        root.addView(scroll,new LinearLayout.LayoutParams(-1,0,1));
+        LinearLayout nav=new LinearLayout(this);nav.setPadding(dp(8),dp(8),dp(8),dp(12));nav.setBackgroundColor(surface);
+        String[] destinations={"◉\nAna Sayfa","◇\nModlar","↗\nAnaliz","▣\nCihazlar","⚙\nAyarlar"};int[] pageIds={0,3,2,1,4};
+        for(int i=0;i<destinations.length;i++){
+            final int selected=i,destination=pageIds[i];TextView item=text(destinations[i],12,i==0?accent:muted);item.setGravity(Gravity.CENTER);item.setContentDescription(destinations[i].replace('\n',' '));
+            nav.addView(item,new LinearLayout.LayoutParams(0,dp(64),1));item.setOnClickListener(v->{
+                for(int j=0;j<cards.size();j++)cards.get(j).setVisibility(j==destination?View.VISIBLE:View.GONE);
+                for(int j=0;j<nav.getChildCount();j++)((TextView)nav.getChildAt(j)).setTextColor(j==selected?accent:muted);
+                scroll.smoothScrollTo(0,0);
+            });
+        }
+        root.setOnApplyWindowInsetsListener((v,insets)->{if(android.os.Build.VERSION.SDK_INT>=30){android.graphics.Insets safe=insets.getInsets(WindowInsets.Type.systemBars()|WindowInsets.Type.displayCutout());v.setPadding(safe.left,safe.top,safe.right,safe.bottom);}return insets;});
+        root.addView(nav);for(int j=1;j<cards.size();j++)cards.get(j).setVisibility(View.GONE);
+        setContentView(root);
     }
     private void error(String message) { new AlertDialog.Builder(this).setTitle("İşlem tamamlanamadı").setMessage(message).setPositiveButton("Tamam", null).show(); }
     @Override public void onResume() { super.onResume(); handler.post(refresh); }

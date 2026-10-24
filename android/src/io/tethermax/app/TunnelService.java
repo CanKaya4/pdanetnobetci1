@@ -12,6 +12,7 @@ import java.util.concurrent.*;
 public final class TunnelService extends Service {
     public static volatile String status = "Durduruldu";
     public static volatile TunnelService instance;
+    public static volatile long startedAt;
     public static volatile String networkInfo = "Hücresel ağ henüz seçilmedi";
     public long uploaded() { Relay r=relay; return r==null?0:r.uploaded.get(); }
     public long downloaded() { Relay r=relay; return r==null?0:r.downloaded.get(); }
@@ -32,10 +33,10 @@ public final class TunnelService extends Service {
     private ConnectivityManager.NetworkCallback callback;
     @Override public void onCreate() {
         super.onCreate();
-        instance = this;
+        instance = this; startedAt=android.os.SystemClock.elapsedRealtime();
         NotificationManager notifications = getSystemService(NotificationManager.class);
         notifications.createNotificationChannel(new NotificationChannel("engine", "USB aktarım", NotificationManager.IMPORTANCE_LOW));
-        startForeground(1, new Notification.Builder(this, "engine").setContentTitle("TetherMax USB motoru").setContentText("Hücresel bağlantı bekleniyor").setSmallIcon(android.R.drawable.stat_sys_upload_done).build());
+        startForeground(1, new Notification.Builder(this, "engine").setContentTitle("TetherMax USB motoru").setContentText("Hücresel bağlantı bekleniyor").setSmallIcon(getResources().getIdentifier("tethermax_notification", "drawable", getPackageName())).build());
         manager = getSystemService(ConnectivityManager.class);
         callback = new ConnectivityManager.NetworkCallback() {
             @Override public void onAvailable(Network network) {
@@ -112,3 +113,4 @@ public final class TunnelService extends Service {
     }
     @Override public IBinder onBind(Intent intent) { return null; }
 }
+

@@ -7,7 +7,8 @@ ANDROID_JAR="$ANDROID_SDK_ROOT/platforms/android-35/android.jar"
 rm -rf build/android/classes build/android/dex
 mkdir -p build/android/classes build/android/dex build/artifacts build/reports
 # No Gradle/plugin/dependency downloads; pinned SDK tools and Android framework only.
-"$SDK_BUILD_TOOLS/aapt2" link -o build/android/base.apk --manifest android/AndroidManifest.xml -I "$ANDROID_JAR" --min-sdk-version 26 --target-sdk-version 35
+"$SDK_BUILD_TOOLS/aapt2" compile --dir android/res -o build/android/resources.zip
+"$SDK_BUILD_TOOLS/aapt2" link -o build/android/base.apk --manifest android/AndroidManifest.xml -I "$ANDROID_JAR" --min-sdk-version 26 --target-sdk-version 35 build/android/resources.zip
 find engine/src android/src -name '*.java' -print0 | xargs -0 javac --release 8 -Xlint:all,-options -classpath "$ANDROID_JAR" -d build/android/classes
 find build/android/classes -name '*.class' -print > build/android/classes.list
 "$SDK_BUILD_TOOLS/d8" --lib "$ANDROID_JAR" --min-api 26 --output build/android/dex @build/android/classes.list
