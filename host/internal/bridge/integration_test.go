@@ -73,6 +73,20 @@ func TestJavaEngineEndToEnd(t *testing.T) {
 		if err != nil || after.Mode != traffic.Streaming || after.Revision <= before.Revision || after.HostAgeMs < 0 {
 			t.Fatal(after, err)
 		}
+		if err = c.SetDNS("adguard"); err != nil {
+			t.Fatal(err)
+		}
+		dnsStatus, err := c.Status()
+		if err != nil || dnsStatus.DNSProfile != "adguard" || dnsStatus.Revision <= after.Revision {
+			t.Fatal("DNS profile acknowledgement", dnsStatus, err)
+		}
+		if err = c.SetDNS("invalid"); err == nil {
+			t.Fatal("invalid DNS accepted")
+		}
+		if err = c.SetDNS("system"); err != nil {
+			t.Fatal(err)
+		}
+
 		if err = c.SetMode("invalid"); err == nil {
 			t.Fatal("invalid remote profile accepted")
 		}

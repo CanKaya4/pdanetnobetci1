@@ -27,7 +27,7 @@ internal sealed partial class Dashboard : Window
     DateTime? connectedAt;
     readonly TextBlock sessionDetails=new(){FontSize=13,Foreground=UiTheme.Muted,Margin=new Thickness(0,10,0,0),TextWrapping=TextWrapping.Wrap};
     readonly CellularAvailability cellularAvailability=new();
-    TaskCompletionSource<bool>? profileApplied;string? pendingProfile; int reconnectAttempts;
+    TaskCompletionSource<bool>? profileApplied;TrafficSettings? pendingProfile; int reconnectAttempts;
     void Stage(string label) { connection.Status=label; state.Text=label; Note("Aşama · "+label);UpdateControls(); }
     void Phase(ConnectionPhase phase,string label) { connection.Advance(phase,label);Stage(label); }
     Process? engine; CancellationTokenSource? session; bool busy, closing, refreshing; string? selectedSerial; string? pairForward, dataForward;
@@ -53,7 +53,7 @@ internal sealed partial class Dashboard : Window
     string EnginePath => Path.Combine(root,"tethermax-engine.exe");
     public Dashboard(bool preview=false,bool manualStart=false)
     {
-        InitializeComponent(); DataContext=connection; SharingHost.Content=new SharingPanel(()=>systemNetwork);
+        InitializeComponent(); DataContext=connection; SharingHost.Content=new SharingPanel(()=>systemNetwork,trafficPanel.SelectDns,()=>trafficPanel.Settings);
         Title="TetherMax 1.0 RC · USB bağlantısı"; Width=960;Height=900;MinWidth=760;MinHeight=650;
         Background=UiTheme.Background;
         var panel=new StackPanel { Margin=new Thickness(28) }; HomeHost.Content=panel;
@@ -63,10 +63,13 @@ internal sealed partial class Dashboard : Window
         var heroContent=new StackPanel();hero.Child=heroContent;heroContent.Children.Add(state);heroContent.Children.Add(sessionDetails);panel.Children.Add(hero);
         DevicesHost.Children.Add(new TextBlock{Text="Güvenilen USB telefonu",FontSize=28});DevicesHost.Children.Add(devices);
         heroContent.Children.Add(new TextBlock{Text="USB · Güvenli eşleştirme · Hücresel veri yolu",Foreground=UiTheme.Accent,TextWrapping=TextWrapping.Wrap});
-        var summary=new MetricsDashboard();panel.Children.Add(summary);trafficPanel.MetricsReset=summary.Clear;trafficPanel.MetricsUpdated=data=>{summary.Accept(data);if(pendingProfile!=null&&data.TryGetProperty("requested",out var requested)&&requested.GetString()==pendingProfile)profileApplied?.TrySetResult(true);};
+        var summary=new MetricsDashboard();panel.Children.Add(summary);trafficPanel.MetricsReset=summary.Clear;trafficPanel.MetricsUpdated=data=>{summary.Accept(data);if(pendingProfile!=null&&pendingProfile.Acknowledged(data))profileApplied?.TrySetResult(true);};
+        var modeFeedback=new TextBlock{Foreground=UiTheme.Accent,TextWrapping=TextWrapping.Wrap,Margin=new Thickness(0,0,0,18)};ModesHost.Children.Add(modeFeedback);
+        var modeChoices=new List<(string Id,Button Button)>();
+        trafficPanel.StatusChanged+=()=>{modeFeedback.Text=trafficPanel.StatusText;foreach(var item in modeChoices){item.Button.IsEnabled=!trafficPanel.IsApplying;item.Button.Content=item.Id==trafficPanel.Settings.Mode?"✓ Seçili":"Profili seç";}};
         foreach(var mode in new[]{("auto","Otomatik","Akıllı profil seçimi"),("gaming","Oyun","Gecikme odaklı trafik öncelikleri"),("streaming","Film / Dizi","Video ve paylaşılan bağlantı"),("daily","Günlük","Dengeli kullanım"),("maximum","Maksimum Hız","Aktarım odaklı profil")}) {
             var box=new Border{CornerRadius=new CornerRadius(16),Background=UiTheme.Surface,Padding=new Thickness(20),Margin=new Thickness(0,0,0,14)};
-            var row=new StackPanel();box.Child=row;row.Children.Add(new TextBlock{Text=mode.Item2,FontSize=22});row.Children.Add(new TextBlock{Text=mode.Item3,Margin=new Thickness(0,8,0,12)});Button(row,"Profili seç",async()=>await trafficPanel.SelectMode(mode.Item1));ModesHost.Children.Add(box);
+            var row=new StackPanel();box.Child=row;row.Children.Add(new TextBlock{Text=mode.Item2,FontSize=22});row.Children.Add(new TextBlock{Text=mode.Item3,Margin=new Thickness(0,8,0,12)});var select=Button(row,"Profili seç",async()=>await trafficPanel.SelectMode(mode.Item1));modeChoices.Add((mode.Item1,select));ModesHost.Children.Add(box);
         }
         var actions=new WrapPanel();panel.Children.Add(actions);
         var diagnostics=new WrapPanel(); DiagnosticsHost.Content=new StackPanel(); ((StackPanel)DiagnosticsHost.Content).Children.Add(diagnostics);
@@ -214,7 +217,7 @@ internal sealed partial class Dashboard : Window
             return port;
         } catch { await Adb("-s",serial,"forward","--remove","tcp:"+port);throw; }
     }
-    async Task ConnectUsb()
+    async Task ConnectUsb(bool prepareAndroid=true)
     {
         if(busy||engine!=null||systemNetwork!=null)return;if(devices.SelectedItem is not Device device){Note("Yetkili USB telefonu bulunamadı. Telefonda USB hata ayıklama onayını kontrol edin.");return;}
         if(!File.Exists(EnginePath))throw new IOException("Go motoru paket içinde bulunamadı.");
@@ -222,7 +225,8 @@ internal sealed partial class Dashboard : Window
         try{
             Phase(ConnectionPhase.CheckingAuthorization,"USB yetkisi doğrulandı");
             Phase(ConnectionPhase.PreparingAndroid,"Android servisinin hazır olması bekleniyor");
-            await Adb("-s",device.Serial,"shell","am","start","-n","io.tethermax.app/.MainActivity","--ez","prepare_connection","true");
+            string serviceState=await Adb("-s",device.Serial,"shell","dumpsys","activity","services","io.tethermax.app");
+            if(prepareAndroid&&!serviceState.Contains(".TunnelService"))await Adb("-s",device.Serial,"shell","am","start","-n","io.tethermax.app/.MainActivity","--ez","prepare_connection","true");
             await Readiness.WaitFor(async()=>{string services=await Adb("-s",device.Serial,"shell","dumpsys","activity","services","io.tethermax.app");return services.Contains(".TunnelService");},session.Token);
             Phase(ConnectionPhase.Authenticating,"Güvenli eşleştirme doğrulanıyor");
             int pairPort=await Forward(device.Serial,"io.tethermax.pair.v2");pairForward="tcp:"+pairPort;
@@ -232,7 +236,7 @@ internal sealed partial class Dashboard : Window
             socksPort=System.Net.NetworkInformation.IPGlobalProperties.GetIPGlobalProperties().GetActiveTcpListeners().Any(p=>p.Port==1088)?FreePort():1088;
             var start=new ProcessStartInfo(EnginePath){UseShellExecute=false,CreateNoWindow=true,RedirectStandardInput=true,RedirectStandardOutput=true,RedirectStandardError=true};
             foreach(var arg in new[]{"serve","--approve-usb-test","--pairing-stdin","--transport","127.0.0.1:"+dataPort,"--listen","127.0.0.1:"+socksPort})start.ArgumentList.Add(arg);
-            foreach(var arg in new[]{"--traffic-control-stdin","--traffic-telemetry","--profile",trafficPanel.Settings.Mode,"--upload-mbps",trafficPanel.Settings.UploadMbps.ToString(CultureInfo.InvariantCulture),"--download-mbps",trafficPanel.Settings.DownloadMbps.ToString(CultureInfo.InvariantCulture)})start.ArgumentList.Add(arg);
+            foreach(var arg in new[]{"--traffic-control-stdin","--traffic-telemetry","--dns-profile",trafficPanel.Settings.DnsProfile,"--profile",trafficPanel.Settings.Mode,"--upload-mbps",trafficPanel.Settings.UploadMbps.ToString(CultureInfo.InvariantCulture),"--download-mbps",trafficPanel.Settings.DownloadMbps.ToString(CultureInfo.InvariantCulture)})start.ArgumentList.Add(arg);
             if(trafficPanel.Settings.Adaptive)start.ArgumentList.Add("--adaptive");
             Phase(ConnectionPhase.StartingEngine,"Ağ motoru hazırlanıyor");
             engine=Process.Start(start)??throw new IOException("Go motoru başlatılamadı.");engine.StandardInput.NewLine="\n";await engine.StandardInput.WriteLineAsync(secret);await engine.StandardInput.FlushAsync();secret="";
@@ -267,8 +271,9 @@ internal sealed partial class Dashboard : Window
     }
     async Task ConnectSystemNetwork(bool diagnostic=true,bool automatic=false)
     {
-        if(closing||connecting||busy||systemNetwork!=null)return;
-        if(!diagnostic&&!DailyReady){Note("Önce Tanılama sayfasındaki sistem geneli bağlantı testi tamamlanmalı.");return;}
+        if(closing){Stage("Uygulama kapanıyor; bağlantı başlatılamaz.");return;}
+        if(connecting||busy){Stage("Bağlantı işlemi sürüyor · tamamlanmasını bekleyin veya İptal seçin.");return;}
+        if(systemNetwork!=null){Stage(systemNetwork.Active?"TetherMax oturumu etkin · durum doğrulaması sürüyor.":"Önceki oturum kurtarılıyor · tamamlanınca yeniden deneyin.");return;}
         if(!automatic)reconnectAttempts=0;
         if(reconnectAttempts>=5){wantsDaily=false;reconnectAttempts=0;Stage("Otomatik denemeler durdu · yeniden Bağlan seçin");return;}
         connecting=true;userCanceled=false;connection.Begin();bool ownsOperation=false;
@@ -284,7 +289,7 @@ internal sealed partial class Dashboard : Window
                 if(authorizationRequired){wantsDaily=false;throw new UnauthorizedAccessException("Telefondaki USB hata ayıklama yetkisini onaylayın.");}
                 return devices.SelectedItem is Device;
             },session.Token);
-            await ConnectSystemNetworkCore(diagnostic);
+            await ConnectSystemNetworkCore(diagnostic,automatic);
         }
         catch(Exception e) {
             if(e is UnauthorizedAccessException)wantsDaily=false;
@@ -295,14 +300,13 @@ internal sealed partial class Dashboard : Window
         }
         finally {connecting=false;UpdateControls();if(ownsOperation)operations.Release();}
     }
-    async Task ConnectSystemNetworkCore(bool diagnostic)
+    async Task ConnectSystemNetworkCore(bool diagnostic,bool automatic=false)
     {
-        if(busy||systemNetwork!=null)return;
-        if(!diagnostic&&!DailyReady){Note("Günlük bağlantı için önce Sistem geneli USB testindeki HTTPS/UDP/DNS ve kurtarma kabulü tamamlanmalı.");return;}
-        if(diagnostic&&MessageBox.Show(this,"Bu ayrı fiziksel geçiş testidir. En fazla 120 saniye ve toplam 1 MiB relay payload bütçesiyle tüm IPv4 çıkışı TetherMax Wintun'a yönlendirilecek; dış IPv6 ve diğer adaptör çıkışları WFP ile engellenecek. Protokol ek yükleri, yeniden iletim ve Android isim çözümü bu payload sayacına dahil değildir; operatör faturası için kesin üst sınır değildir. TetherMax'e özel IP, iki /1 rota ve geçici DNS kuralı eklenecek. Ethernet 5 kapatılmaz. Resmî Wintun sürücüsü yüklenebilir; paylaşılan sürücü paketi test sonunda silinmez. Bağlantı başarısızsa mevcut internetiniz ve bu sohbet geçici kesilebilir. Ayrı kurtarma süreci ayarları geri alır.\n\nArka plan uygulamaları da bütçeyi kullanabilir. Operatör karşılaştırma deneyi ayrıca onaylanmalıdır.\n\nBu somut ağ değişikliklerine ve belirtilen veri bütçesine şimdi izin veriyor musunuz?","Ayrı sistem geneli ağ onayı",MessageBoxButton.YesNo,MessageBoxImage.Warning)!=MessageBoxResult.Yes)return;
+        if(busy||systemNetwork!=null)throw new IOException("Önceki bağlantı işlemi henüz tamamlanmadı.");
+        if(diagnostic&&MessageBox.Show(this,"Bu ayrı fiziksel geçiş testidir. En fazla 120 saniye ve toplam 1 MiB relay payload bütçesiyle tüm IPv4 çıkışı TetherMax Wintun'a yönlendirilecek; dış IPv6 ve diğer adaptör çıkışları WFP ile engellenecek. Protokol ek yükleri, yeniden iletim ve Android isim çözümü bu payload sayacına dahil değildir; operatör faturası için kesin üst sınır değildir. TetherMax'e özel IP, iki /1 rota ve geçici DNS kuralı eklenecek. Ethernet 5 kapatılmaz. Resmî Wintun sürücüsü yüklenebilir; paylaşılan sürücü paketi test sonunda silinmez. Bağlantı başarısızsa mevcut internetiniz ve bu sohbet geçici kesilebilir. Ayrı kurtarma süreci ayarları geri alır.\n\nArka plan uygulamaları da bütçeyi kullanabilir. Operatör karşılaştırma deneyi ayrıca onaylanmalıdır.\n\nBu somut ağ değişikliklerine ve belirtilen veri bütçesine şimdi izin veriyor musunuz?","Ayrı sistem geneli ağ onayı",MessageBoxButton.YesNo,MessageBoxImage.Warning)!=MessageBoxResult.Yes){userCanceled=true;throw new OperationCanceledException("Ağ değişikliği onayı verilmedi.");}
         wantsDaily=!diagnostic;nextReconnect=DateTime.UtcNow.AddSeconds(Readiness.BackoffSeconds(reconnectAttempts++));
-        if(engine==null)await ConnectUsb();
-        if(engine==null||selectedSerial==null||pairForward==null||dataForward==null){Note("USB eşleştirmesi kurulamadı; sistem ağı değiştirilmedi.");return;}
+        if(engine==null)await ConnectUsb(true);
+        if(engine==null||selectedSerial==null||pairForward==null||dataForward==null)throw new IOException("USB eşleştirmesi kurulamadı; sistem ağı değiştirilmedi.");
         busy=true;wantsDaily=!diagnostic;
         try {
             using var timeout=CancellationTokenSource.CreateLinkedTokenSource(session!.Token);timeout.CancelAfter(TimeSpan.FromSeconds(45));
@@ -318,6 +322,7 @@ internal sealed partial class Dashboard : Window
                 try{using var record=JsonDocument.Parse(message);string? type=record.RootElement.GetProperty("type").GetString();
                     if(type!="network-report"&&!ReferenceEquals(systemNetwork,ownedNetwork))return;
                     if(type=="network-channel-closed"){Phase(ConnectionPhase.Failed,"Ağ yardımcısı durdu · güvenli kurtarma bekleniyor");_ = ReleaseStoppedNetwork();}
+                    if(type=="network-error"){Phase(ConnectionPhase.Failed,"Bağlantı hatası · "+record.RootElement.GetProperty("message").GetString());_ = ReleaseStoppedNetwork();}
                     if(type=="worker-ready")Phase(ConnectionPhase.ConfiguringWindows,"Wintun hazır · Windows ağı yapılandırılıyor");
                     if(type=="network-active")Phase(ConnectionPhase.CheckingInternet,"Wintun/USB etkin · internet doğrulanıyor");
                     if(type=="windows-connectivity") {
@@ -327,7 +332,7 @@ internal sealed partial class Dashboard : Window
                         if(tray!=null)tray.Icon=new System.Drawing.Icon(Path.Combine(root,"Assets",healthy?"connected.ico":"error.ico"));
                     }
                     if(type=="ip-counters"&&record.RootElement.TryGetProperty("payload",out var payload)&&payload.TryGetProperty("type",out var payloadType)&&payloadType.GetString()=="traffic"){
-                        trafficPanel.Accept(payload);
+                        var previousSettings=trafficPanel.Settings;trafficPanel.Accept(payload);if(previousSettings!=trafficPanel.Settings)SavePreferences();
                         string? cellular=payload.TryGetProperty("phoneNetwork",out var source)?source.GetString():null;
                         if(cellularAvailability.Observe(cellular)){Phase(ConnectionPhase.Failed,"Hücresel servis yanıt vermiyor · güvenli yeniden bağlantı bekleniyor");nextReconnect=DateTime.UtcNow.AddSeconds(Readiness.BackoffSeconds(reconnectAttempts++));_ = ReleaseStoppedNetwork();}
                     }
@@ -347,18 +352,12 @@ internal sealed partial class Dashboard : Window
     {
         if(!await operations.WaitAsync(0))throw new IOException("Bağlantı işlemi bitince profili tekrar seçin.");
         try {
-            if(systemNetwork?.Active!=true||selectedSerial==null||pairForward==null||dataForward==null)throw new IOException("Etkin güvenli bağlantı bekleniyor.");
-            using var deadline=new CancellationTokenSource(TimeSpan.FromSeconds(12));
-            string secret=await Pairing.Connect(int.Parse(pairForward[4..]),selectedSerial,_=>Task.FromResult(false),deadline.Token);
-            var start=new ProcessStartInfo(EnginePath){UseShellExecute=false,CreateNoWindow=true,RedirectStandardInput=true,RedirectStandardOutput=true,RedirectStandardError=true};
-            foreach(var arg in new[]{"profile-set","--approve-usb-test","--transport","127.0.0.1:"+dataForward[4..],"--mode",settings.Mode})start.ArgumentList.Add(arg);
-            profileApplied=new(TaskCreationOptions.RunContinuationsAsynchronously);pendingProfile=settings.Mode;
-            using var process=Process.Start(start)??throw new IOException("Profil komutu başlatılamadı.");process.StandardInput.NewLine="\n";await process.StandardInput.WriteLineAsync(secret);secret="";process.StandardInput.Close();
-            var output=process.StandardOutput.ReadToEndAsync();var errors=process.StandardError.ReadToEndAsync();
-            try {await process.WaitForExitAsync(deadline.Token);}catch{try{process.Kill();}catch{}throw;}
-            if(process.ExitCode!=0)throw new IOException("Profil doğrulanamadı: "+await errors);
-            await output;await profileApplied.Task.WaitAsync(deadline.Token);
-            Note("Profil Android ve Windows telemetrisinde canlı doğrulandı. Hız tavanı/adaptif değişikliği sonraki bağlantıda uygulanır.");
+            if(systemNetwork?.Active!=true)throw new IOException("Etkin güvenli bağlantı bekleniyor.");
+            using var deadline=new CancellationTokenSource(TimeSpan.FromSeconds(15));
+            profileApplied=new(TaskCreationOptions.RunContinuationsAsynchronously);pendingProfile=settings;
+            await systemNetwork.UpdateTraffic(settings);
+            await profileApplied.Task.WaitAsync(deadline.Token);
+            Note("Mod, DNS ve hız ayarları canlı motor ve telefon tarafından doğrulandı.");
         } finally {pendingProfile=null;profileApplied=null;operations.Release();}
     }
     async Task ReadTelemetry(Process process)

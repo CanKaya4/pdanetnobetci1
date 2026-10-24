@@ -145,7 +145,12 @@ func runIP(args []string, framed bool) error {
 	}
 	json.NewEncoder(os.Stdout).Encode(identity)
 	// Readiness must be the first stdout record; profile telemetry starts later.
-	stop := startTrafficRuntime(ctx, cancel, qos, manager, link, os.Stdin, output)
+	settingsInput, settingsOutput := io.Pipe()
+	defer settingsOutput.Close()
+	closeSettings := context.AfterFunc(ctx, func() { settingsInput.Close(); settingsOutput.Close() })
+	defer closeSettings()
+	*qos.control = true
+	stop := startTrafficRuntime(ctx, cancel, qos, manager, link, settingsInput, output)
 	defer stop()
 	countersDone := make(chan struct{})
 	go func() {
@@ -170,7 +175,13 @@ func runIP(args []string, framed bool) error {
 	watchDone := make(chan struct{})
 	go func() {
 		defer close(watchDone)
-		watchParent(ctx, os.Stdin, 5*time.Second)
+		watchNativeParent(ctx, os.Stdin, 5*time.Second, func(data []byte) error {
+			if _, err := decodeTrafficSettings(data); err != nil {
+				return err
+			}
+			_, err := settingsOutput.Write(append(data, byte(10)))
+			return err
+		})
 		cancel()
 	}()
 	defer func() { cancel(); <-watchDone }()

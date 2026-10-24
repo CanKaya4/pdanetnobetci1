@@ -1,113 +1,87 @@
 using System.Diagnostics;
 using System.IO;
-using System.Text;
+using System.Net;
+using System.Security.Cryptography;
 using System.Text.Json;
 using System.Windows;
 using System.Windows.Controls;
-
+using System.Windows.Media;
+using System.Windows.Threading;
 namespace TetherMax;
+internal sealed class SharingPanel : StackPanel {
+ readonly Func<SystemNetwork?> network;
+ readonly TextBox ssid=new(){Text="TetherMax",MaxLength=32};
+ readonly ComboBox band=new(){ItemsSource=new[]{"Otomatik","2,4 GHz · TV ve eski cihazlar","5 GHz · destekleyen cihazlar"},SelectedIndex=1};
+ readonly PasswordBox password=new(){MaxLength=63};
+ readonly TextBlock status=Text("USB bağlantısı bekleniyor",22);
+ readonly TextBlock source=Text("",13),acceptance=Text("İstemci interneti henüz doğrulanmadı",14);
+ readonly Button start=new(){Content="Hotspot Başlat"},end=new(){Content="Durdur",IsEnabled=false};
+ readonly StackPanel clients=new();readonly TextBlock clientState=Text("Hotspot kapalı",14);string? clientSignature;readonly Dictionary<string,DateTime> firstSeen=new();
+ readonly DispatcherTimer timer=new(){Interval=TimeSpan.FromSeconds(2)};
+ NativeHotspot? hotspot;HotspotPortal? portal;bool changing;bool? lastActive;bool recoveryPending;
+ string? session;
+ static TextBlock Text(string value,int size)=>new(){Text=value,FontSize=size,Foreground=UiTheme.Ink,TextWrapping=TextWrapping.Wrap,Margin=new Thickness(0,0,0,14)};
+ static Border Card(UIElement child)=>new(){Background=UiTheme.Surface,CornerRadius=new CornerRadius(18),Padding=new Thickness(22),Margin=new Thickness(0,0,0,18),Child=child};
+ static void Input(Control c){c.Margin=new Thickness(0,0,0,16);c.Padding=new Thickness(12);c.FontSize=16;c.Background=UiTheme.Background;c.Foreground=UiTheme.Ink;c.BorderBrush=UiTheme.Muted;c.BorderThickness=new Thickness(1);}
+ public SharingPanel(Func<SystemNetwork?> network,Func<string,Task>? applyDns=null,Func<TrafficSettings>? currentSettings=null){
+  this.network=network;Margin=new Thickness(28);Children.Add(Text("Wi-Fi Hotspot",30));Children.Add(Text("USB internetinizi telefon, TV ve diğer cihazlarla paylaşın.",14));
+  var state=new StackPanel();state.Children.Add(status);state.Children.Add(source);state.Children.Add(acceptance);Children.Add(Card(state));
+  var settings=new StackPanel();settings.Children.Add(Text("Ağ ayarları",20));settings.Children.Add(Text("Wi-Fi ağ adı",13));Input(ssid);settings.Children.Add(ssid);settings.Children.Add(Text("WPA2 parolası · en az 8 karakter",13));Input(password);settings.Children.Add(password);settings.Children.Add(Text("Yayın bandı",13));Input(band);settings.Children.Add(band);settings.Children.Add(Text("TV için 2,4 GHz seçin. Desteklenmeyen bantta yayın başlatılmaz.",13));
+  password.Password=Convert.ToHexString(RandomNumberGenerator.GetBytes(6));
+  try{var saved=HotspotPreferences.Read();if(saved!=null){ssid.Text=saved.Ssid;band.SelectedIndex=saved.Band;password.Password=saved.Password;}}catch(Exception e)when(e is IOException or System.Security.Cryptography.CryptographicException or FormatException or JsonException){status.Text="Kayıtlı ağ ayarı açılamadı; ağ adı ve parolayı yeniden girin.";}
+  var generate=new Button{Content="Yeni güvenli parola üret",Padding=new Thickness(12),Margin=new Thickness(0,0,0,12)};generate.Click+=(_,_)=>{if(!changing&&hotspot==null)password.Password=Convert.ToHexString(RandomNumberGenerator.GetBytes(6));};settings.Children.Add(generate);
+  var reveal=new CheckBox{Content="Parolayı göster",Foreground=UiTheme.Ink,Margin=new Thickness(0,0,0,12)};var visible=Text("",14);reveal.Checked+=(_,_)=>visible.Text=password.Password;reveal.Unchecked+=(_,_)=>visible.Text="";password.PasswordChanged+=(_,_)=>{if(reveal.IsChecked==true)visible.Text=password.Password;};settings.Children.Add(reveal);settings.Children.Add(visible);
+  var actions=new WrapPanel();foreach(var b in new[]{start,end}){b.Padding=new Thickness(20,12,20,12);b.Margin=new Thickness(0,0,12,0);actions.Children.Add(b);}settings.Children.Add(actions);Children.Add(Card(settings));
+  var devices=new StackPanel();devices.Children.Add(Text("Bağlı cihazlar",20));devices.Children.Add(clientState);devices.Children.Add(clients);devices.Children.Add(Text("Ad, IP ve MAC Windows tarafından bildirilir. İlk görülme zamanı bu uygulamaya aittir. Cihaz başına hız ölçülmediğinde tahmin gösterilmez.",12));Children.Add(Card(devices));
+  var verify=new StackPanel();verify.Children.Add(Text("Bağlı cihazda internet kontrolü",20));verify.Children.Add(Text("Wi-Fi'ye bağlanan cihazın tarayıcısında http://192.168.137.1 adresini açın ve İnterneti kontrol et düğmesine dokunun. Sonuç bu ekranda görünecek.",14));Children.Add(Card(verify));
+  var dns=new StackPanel();dns.Children.Add(Text("Paylaşılan internetin DNS filtresi",20));
+  var profiles=new ComboBox{Margin=new Thickness(0,0,0,12),ItemsSource=new[]{"AdGuard · reklam / izleyici filtresi","AdGuard Aile","Cloudflare","Özgün DNS"},SelectedIndex=0};dns.Children.Add(profiles);
+  var dnsApply=new Button{Content="DNS profilini uygula",Padding=new Thickness(16,10,16,10)};dns.Children.Add(dnsApply);var dnsState=Text("",14);dns.Children.Add(dnsState);
+  dnsApply.Click+=async(_,_)=>{dnsApply.IsEnabled=false;try{if(applyDns==null)throw new IOException("Önizleme modunda ayar uygulanmaz.");await applyDns(new[]{"adguard","family","cloudflare","system"}[profiles.SelectedIndex]);dnsState.Text="Seçili profil: "+(currentSettings?.Invoke().DnsProfile??"bilinmiyor");}catch(Exception e){dnsState.Text=e.Message;}finally{dnsApply.IsEnabled=true;}};
+  dns.Children.Add(Text("Normal TCP/UDP DNS sorguları seçilen servise USB/hücresel yoldan aktarılır. Cihazın kendi şifreli DNS’i ayrı çalışabilir. DNS filtreleri YouTube gibi uygulamalardaki tüm reklamları kaldıramaz.",13));Children.Add(Card(dns));
 
-// A diagnostic view, not an undocumented remote-control API for MyPublicWiFi.
-// Never infer shared-client connectivity from an adapter or process being up.
-internal sealed class SharingPanel : StackPanel
-{
-    readonly TextBlock status = Text("Paylaşım henüz denetlenmedi.", 20);
-    readonly TextBlock details = Text("", 14);
-    readonly Button refresh;
-    readonly ComboBox privateAdapter=new(){MinWidth=280,Margin=new Thickness(0,0,0,16)};
-    readonly Func<SystemNetwork?> network;
-    bool reading;
-    bool changing;
-    sealed record Hotspot(string Guid,string Name){public override string ToString()=>Name;}
-    static TextBlock Text(string value, int size) => new() { Text=value, FontSize=size,
-        Foreground=UiTheme.Ink, TextWrapping=TextWrapping.Wrap, Margin=new Thickness(0,0,0,18) };
-    public SharingPanel(Func<SystemNetwork?> network)
-    {
-        this.network=network;
-        Margin=new Thickness(28);
-        Children.Add(Text("TV ve Wi-Fi Paylaşımı",28));
-        Children.Add(Text("Galaxy → USB → TetherMax → Windows paylaşımı → TV",14));
-        Children.Add(status);
-        Children.Add(Text("İlk kurulum: MyPublicWiFi → No Internet Sharing → Start Hotspot. SSID ve parolanız aynı kalır. Ardından TetherMax ile Bağlan, burada yerel Wi-Fi adaptörünü seç ve Paylaşımı başlat. Windows ICS, DHCP/DNS ve NAT sağlar.",14));
-        Children.Add(privateAdapter);
-        var actions=new WrapPanel();Children.Add(actions);
-        refresh=new Button { Content="Güvenli bağlantı teşhisi", Padding=new Thickness(16,12,16,12), Margin=new Thickness(0,0,8,16) };
-        refresh.Click+=async(_,_)=>await Inspect();actions.Children.Add(refresh);
-        var open=new Button { Content="MyPublicWiFi’yi aç", Padding=new Thickness(16,12,16,12), Margin=new Thickness(0,0,8,16) };
-        open.Click+=(_,_)=>{
-            try {
-                string path=new[]{Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86),Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles)}
-                    .Select(p=>Path.Combine(p,"MyPublicWiFi","MyPublicWiFi.exe")).FirstOrDefault(File.Exists)??throw new IOException("MyPublicWiFi kurulumu bulunamadı.");
-                Process.Start(new ProcessStartInfo(path){UseShellExecute=true});
-            }catch(Exception e){status.Text="MyPublicWiFi açılamadı: "+e.Message;}
-        };actions.Children.Add(open);
-        foreach(var action in new[]{("Paylaşımı başlat",true),("Paylaşımı durdur",false)}){
-            var button=new Button{Content=action.Item1,Padding=new Thickness(16,12,16,12),Margin=new Thickness(0,0,8,16)};
-            button.Click+=async(_,_)=>await ChangeSharing(action.Item2);actions.Children.Add(button);
-        }
-        Children.Add(details);
-        Children.Add(Text("MyPublicWiFi erişim noktasını yönetir. TetherMax yalnızca seçtiğiniz Wi-Fi Direct adaptörünün Windows ICS paylaşımını yönetici onayıyla açar/kapatır. Başka ICS paylaşımı varsa üzerine yazmaz. Tünel kapanmadan önce bu paylaşım kapatılır; kurtarma tamamlanmazsa koruma kaldırılmaz.",14));
-        Children.Add(Text("TV interneti, TV trafik yolu, video oynatma ve bağlantı kaybında kaçak koruması: DOĞRULANMADI. Komşu tablosu DHCP kaydı değildir. TV başına veri ölçümü mevcut değil; toplam tünel sayacı TV sayacı olarak gösterilmez.",14));
-        Loaded+=async(_,_)=>await Inspect();
-    }
-    async Task ChangeSharing(bool enabled)
-    {
-        if(changing)return;
-        var active=network();
-        if(active?.Active!=true||active.SessionFolder==null){status.Text="Önce ana ekrandan TetherMax bağlantısını kurun.";return;}
-        if(enabled&&privateAdapter.SelectedItem is not Hotspot){status.Text="MyPublicWiFi erişim noktasını No Internet Sharing ile açıp teşhisi yenileyin; etkin Wi-Fi Direct adaptörünü seçin.";return;}
-        changing=true;
-        try {
-            status.Text="Windows yönetici onayı ve paylaşım sonucu bekleniyor…";
-            var launch=new ProcessStartInfo(Path.Combine(AppContext.BaseDirectory,"TetherMax.Network.exe")){UseShellExecute=true,Verb="runas",WindowStyle=ProcessWindowStyle.Hidden};
-            launch.ArgumentList.Add(enabled?"share":"unshare");launch.ArgumentList.Add(active.SessionFolder);
-            if(enabled)launch.ArgumentList.Add(((Hotspot)privateAdapter.SelectedItem!).Guid);
-            launch.ArgumentList.Add("--approve-windows-sharing");
-            using var child=Process.Start(launch)??throw new IOException("Paylaşım yardımcısı başlatılamadı.");
-            await child.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(75));
-            if(child.ExitCode!=0)throw new IOException("Paylaşım yardımcısı çıkış kodu "+child.ExitCode+". Mevcut paylaşım çakışması veya etkin olmayan Wi-Fi adaptörü olabilir. Korumalı oturum kaydı korunmuştur.");
-            await Inspect();status.Text=enabled?"Windows ICS yapılandırıldı · TV internetini ayrıca doğrulayın":"TetherMax Windows ICS paylaşımı kapatıldı.";
-        }catch(Exception e){status.Text="Paylaşım işlemi: "+e.Message;}
-        finally{changing=false;}
-    }
-    async Task Inspect()
-    {
-        if(reading)return;reading=true;refresh.IsEnabled=false;status.Text="Windows paylaşım durumu okunuyor…";
-        try {
-            string script=await File.ReadAllTextAsync(Path.Combine(AppContext.BaseDirectory,"sharing-audit.ps1"));
-            var start=new ProcessStartInfo(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.System),"WindowsPowerShell","v1.0","powershell.exe"))
-                {UseShellExecute=false,CreateNoWindow=true,RedirectStandardOutput=true,RedirectStandardError=true,StandardOutputEncoding=Encoding.UTF8,StandardErrorEncoding=Encoding.UTF8};
-            foreach(var argument in new[]{"-NoProfile","-NonInteractive","-EncodedCommand",Convert.ToBase64String(Encoding.Unicode.GetBytes(script))})start.ArgumentList.Add(argument);
-            using var child=Process.Start(start)??throw new IOException("Paylaşım teşhisi başlatılamadı.");
-            var output=child.StandardOutput.ReadToEndAsync();var error=child.StandardError.ReadToEndAsync();
-            using var timeout=new CancellationTokenSource(TimeSpan.FromSeconds(25));
-            try{await child.WaitForExitAsync(timeout.Token);}catch{try{child.Kill();}catch{}throw;}
-            if(child.ExitCode!=0)throw new IOException((await error).Trim());
-            string json=await output;
-            using var document=JsonDocument.Parse(json);var root=document.RootElement;
-            var lines=new List<string>();
-            if(network() is { } current)lines.Add(current.SharingStatus);
-            string? selected=(privateAdapter.SelectedItem as Hotspot)?.Guid;
-            var hotspots=root.GetProperty("adapters").EnumerateArray().Where(a=>a.GetProperty("description").GetString()?.Contains("Wi-Fi Direct",StringComparison.OrdinalIgnoreCase)==true&&a.GetProperty("status").GetString()=="Up")
-                .Select(a=>new Hotspot(a.GetProperty("guid").GetString()!,a.GetProperty("name").GetString()!)).ToArray();
-            privateAdapter.ItemsSource=hotspots;privateAdapter.SelectedItem=hotspots.FirstOrDefault(h=>h.Guid==selected)??(hotspots.Length==1?hotspots[0]:null);
-            foreach(var app in root.GetProperty("myPublicWiFi").EnumerateArray())lines.Add("MyPublicWiFi "+app.GetProperty("version").GetString()+" · "+(app.GetProperty("running").GetBoolean()?"İşlem açık (hotspot durumu ayrı)":"İşlem kapalı"));
-            if(root.GetProperty("myPublicWiFi").GetArrayLength()==0)lines.Add("MyPublicWiFi bulunamadı.");
-            foreach(var a in root.GetProperty("adapters").EnumerateArray().Where(a=>a.GetProperty("name").GetString()?.StartsWith("TetherMax-IP-")==true))
-                lines.Add("TetherMax: "+a.GetProperty("name").GetString()+" · "+a.GetProperty("status").GetString()+" · "+a.GetProperty("guid").GetString());
-            foreach(var route in root.GetProperty("selectedIPv4").EnumerateArray()) {
-                var names=route.GetProperty("selection").EnumerateArray().Select(r=>r.GetProperty("InterfaceAlias").GetString()).Distinct();
-                lines.Add("Windows rota seçimi · "+route.GetProperty("target").GetString()+" → "+string.Join(", ",names));
-            }
-            foreach(var c in root.GetProperty("ics").EnumerateArray().Where(c=>c.GetProperty("enabled").GetBoolean()))
-                lines.Add("Windows ICS · "+c.GetProperty("name").GetString()+" · "+(c.GetProperty("type").GetInt32()==0?"İnternet kaynağı":"Yerel paylaşım"));
-            if(root.GetProperty("icsError").ValueKind==JsonValueKind.String)lines.Add("Windows ICS: bu izin düzeyinde okunamadı; kapalı kabul edilmedi.");
-            lines.Add("Yerel komşu kaydı: "+root.GetProperty("neighbors").GetArrayLength()+" (TV/bağlı cihaz sayısı değildir).");
-            details.Text=string.Join(Environment.NewLine+Environment.NewLine,lines);
-            status.Text="Yapılandırma okundu · TV veri yolu henüz doğrulanmadı";
-            string folder=Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),"TetherMax","reports");Directory.CreateDirectory(folder);
-            await File.WriteAllTextAsync(Path.Combine(folder,"sharing-"+Guid.NewGuid().ToString("N")+".json"),json);
-        } catch(Exception e){status.Text="Paylaşım teşhisi alınamadı: "+e.Message;}
-        finally{reading=false;refresh.IsEnabled=true;}
-    }
+  start.Click+=async(_,_)=>await Start();end.Click+=async(_,_)=>await Stop();timer.Tick+=async(_,_)=>await Tick();Loaded+=(_,_)=>{timer.Start();_=Tick();};Dispatcher.ShutdownStarted+=(_,_)=>{timer.Stop();hotspot?.Dispose();if(portal!=null)_=portal.DisposeAsync();};
+ }
+ async Task Tick(){
+  var n=network();bool active=n?.Active==true;
+  start.IsEnabled=active&&!changing&&hotspot==null&&!recoveryPending;end.IsEnabled=!changing&&(hotspot!=null||recoveryPending);
+  source.Text=active?"Kaynak: doğrulanmış TetherMax USB / Wintun":"Önce ana ekrandan TetherMax bağlantısını kurun.";
+  if(hotspot==null&&!changing&&lastActive!=active)status.Text=active?"Hotspot başlatılmaya hazır":"USB bağlantısı bekleniyor";
+  lastActive=active;
+  if(!active&&hotspot!=null&&!changing){await Stop();status.Text="USB bağlantısı kapandı · hotspot durduruldu";}
+  else if(hotspot?.Failure is string error)status.Text=error;
+  else if(hotspot?.ClientError is string clientError)status.Text="İstemci bağlantısı: "+clientError;
+  var peers=active&&hotspot!=null?n!.SharingClients:Array.Empty<SystemNetwork.HotspotClient>();
+  string signature=(hotspot!=null)+":"+active+JsonSerializer.Serialize(peers)+n?.SharingClientsError;
+  if(clientSignature!=signature){clientSignature=signature;clients.Children.Clear();clientState.Text=n?.SharingClientsError is string issue?"Cihaz listesi alınamadı: "+issue:hotspot==null?"Hotspot kapalı":peers.Length+" cihaz bağlı";
+   foreach(var peer in peers){if(!firstSeen.ContainsKey(peer.Mac))firstSeen[peer.Mac]=DateTime.Now;string ip=string.Join(", ",peer.Names.Where(x=>IPAddress.TryParse(x,out _)));string name=string.Join(", ",peer.Names.Where(x=>!IPAddress.TryParse(x,out _)));clients.Children.Add(Card(Text((string.IsNullOrWhiteSpace(name)?"Wi-Fi cihazı":name)+Environment.NewLine+"IP: "+(ip.Length==0?"Windows henüz bildirmedi":ip)+Environment.NewLine+"MAC: "+peer.Mac+" · İlk görülme: "+firstSeen[peer.Mac].ToString("HH:mm:ss"),14)));}
+  }
+  if(portal?.Verified.Count>0)acceptance.Text=string.Join(Environment.NewLine,portal.Verified.Select(p=>p.Key+" · cihaz tarayıcısında HTTPS doğrulandı"));
+ }
+ async Task<bool> Share(bool enable){
+  var n=network();string folder=session??n?.SessionFolder??throw new IOException("Etkin USB oturumu bulunamadı.");
+  var info=new ProcessStartInfo(Path.Combine(AppContext.BaseDirectory,"TetherMax.Network.exe")){UseShellExecute=true,Verb="runas",WindowStyle=ProcessWindowStyle.Hidden};
+  info.ArgumentList.Add(enable?"share":"unshare");info.ArgumentList.Add(folder);if(enable)info.ArgumentList.Add(hotspot!.AdapterGuid.ToString());info.ArgumentList.Add("--approve-windows-sharing");
+  using var child=Process.Start(info)??throw new IOException("Paylaşım yardımcısı başlatılamadı.");await child.WaitForExitAsync();if(child.ExitCode!=0){string id=Path.GetFileName(folder).Replace("TetherMax-Network-","");string errorPath=Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),"TetherMax","reports","sharing-error-"+id+".txt");string reason=File.Exists(errorPath)?await File.ReadAllTextAsync(errorPath):"Yardımcı çıkış kodu "+child.ExitCode;throw new IOException("Paylaşım hazır değil: "+reason);}return true;
+ }
+ async Task Start(){
+  if(changing||hotspot!=null)return;if(network()?.Active!=true){status.Text="Önce USB bağlantısını kurun.";return;}
+  changing=true;bool shareAttempted=false;ssid.IsEnabled=password.IsEnabled=band.IsEnabled=false;start.IsEnabled=false;
+  try{
+   session=network()!.SessionFolder;status.Text="Wi-Fi ağı oluşturuluyor…";hotspot=new(Dispatcher);shareAttempted=true;await hotspot.Start(ssid.Text,password.Password,band.SelectedIndex,session!);
+   try{HotspotPreferences.Save(ssid.Text,password.Password,band.SelectedIndex);}catch(Exception e)when(e is IOException or UnauthorizedAccessException or System.Security.Cryptography.CryptographicException){acceptance.Text="Hotspot açık; sonraki açılış için parola kaydedilemedi.";}
+   status.Text="Wi-Fi açık · "+(band.SelectedIndex==1?"2,4 GHz":band.SelectedIndex==2?"5 GHz":"Otomatik bant")+" · istemci internet kontrolü bekleniyor";
+   try{portal=new(IPAddress.Parse("192.168.137.1"));acceptance.Text="Bağlı cihazda http://192.168.137.1 adresini açın.";}
+   catch(System.Net.Sockets.SocketException){acceptance.Text="Yerel kontrol sayfası açılamadı (80 numaralı port kullanımda olabilir). Bağlı cihazda HTTPS / YouTube testi yapın.";}
+  }catch(Exception e){
+   status.Text=e.Message+" · 0x"+e.HResult.ToString("X8");
+   if(hotspot!=null){try{if(shareAttempted)await Share(false);}catch(Exception cleanup){recoveryPending=true;status.Text+=" · Paylaşım kurtarması: "+cleanup.Message;}hotspot.Dispose();hotspot=null;}
+  }finally{changing=false;ssid.IsEnabled=password.IsEnabled=band.IsEnabled=hotspot==null;await Tick();}
+ }
+ async Task Stop(){
+  if(changing||(hotspot==null&&!recoveryPending))return;changing=true;end.IsEnabled=false;
+  try{await Share(false);if(portal!=null){await portal.DisposeAsync();portal=null;}hotspot?.Dispose();hotspot=null;session=null;recoveryPending=false;status.Text="Hotspot durduruldu";acceptance.Text="İstemci interneti henüz doğrulanmadı";}
+  catch(Exception e){recoveryPending=true;status.Text="Durdurma/kurtarma tamamlanmadı: "+e.Message;}
+  finally{changing=false;ssid.IsEnabled=password.IsEnabled=band.IsEnabled=hotspot==null;}
+ }
 }

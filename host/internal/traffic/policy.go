@@ -32,6 +32,7 @@ const (
 )
 
 type Settings struct {
+	DNSProfile   string  `json:"dnsProfile"`
 	Mode         Mode    `json:"mode"`
 	UploadMbps   float64 `json:"uploadMbps"`
 	DownloadMbps float64 `json:"downloadMbps"`
@@ -39,6 +40,11 @@ type Settings struct {
 }
 
 func (s Settings) Validate() error {
+	switch s.DNSProfile {
+	case "", "system", "adguard", "family", "cloudflare":
+	default:
+		return errors.New("invalid DNS profile")
+	}
 	switch s.Mode {
 	case Auto, Gaming, Streaming, Daily, Maximum:
 	default:

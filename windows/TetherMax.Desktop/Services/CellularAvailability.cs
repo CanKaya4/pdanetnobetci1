@@ -4,5 +4,5 @@ namespace TetherMax;
 internal sealed class CellularAvailability {
  int failures;
  public void Reset()=>failures=0;
- public bool Observe(string? source){failures=source?.StartsWith("CELLULAR ",StringComparison.Ordinal)==true?0:failures+1;return failures==3;}
+ public bool Observe(string? source){if(source=="control-unavailable")return false;failures=source?.StartsWith("CELLULAR ",StringComparison.Ordinal)==true?0:failures+1;return failures==3;}
 }

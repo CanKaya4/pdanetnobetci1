@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/binary"
 	"errors"
 	"io"
 	"time"
@@ -11,6 +12,10 @@ import (
 // exit joins the blocked reader, including when a parent stays alive but stalls.
 // This does not recover OS routes; this worker never configures any.
 func watchParent(ctx context.Context, input io.ReadCloser, timeout time.Duration) error {
+	return watchNativeParent(ctx, input, timeout, nil)
+}
+
+func watchNativeParent(ctx context.Context, input io.ReadCloser, timeout time.Duration, settings func([]byte) error) error {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	heartbeat := make(chan error)
@@ -20,7 +25,21 @@ func watchParent(ctx context.Context, input io.ReadCloser, timeout time.Duration
 		var b [1]byte
 		for {
 			_, err := io.ReadFull(input, b[:])
-			if err == nil && b[0] != 0 {
+			if err == nil && b[0] == 1 && settings != nil {
+				var size [2]byte
+				_, err = io.ReadFull(input, size[:])
+				n := int(binary.BigEndian.Uint16(size[:]))
+				if err == nil && (n < 2 || n > 2048) {
+					err = errors.New("invalid settings frame length")
+				}
+				if err == nil {
+					data := make([]byte, n)
+					_, err = io.ReadFull(input, data)
+					if err == nil {
+						err = settings(data)
+					}
+				}
+			} else if err == nil && b[0] != 0 {
 				err = errors.New("invalid parent heartbeat")
 			}
 			select {

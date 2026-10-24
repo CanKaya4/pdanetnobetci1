@@ -24,6 +24,9 @@ public final class Relay implements AutoCloseable {
         DatagramFlow udp(String host, int port) throws IOException;
         default String networkInfo() { return "fixture"; }
         default void onMode(String mode) { }
+        default void onDnsProfile(String profile) { }
+        default boolean encryptedDns(){return false;}
+        default byte[] dns(String profile,byte[] query)throws IOException{throw new IOException("Encrypted DNS unavailable");}
     }
     /** Unconnected socket preserves zero-length datagrams on desktop Java as well as Android.
      * Incoming peer validation is performed by the relay before forwarding each reply. */
@@ -37,13 +40,32 @@ public final class Relay implements AutoCloseable {
     }
     private final Dialer dialer;
     private final byte[] token;
-    private final Semaphore slots = new Semaphore(MAX_FLOWS);
+    private final Semaphore slots = new Semaphore(MAX_FLOWS+8);
+    private final Semaphore dataSlots = new Semaphore(MAX_FLOWS);
+    private final Semaphore controlSlots = new Semaphore(4);
     private final Set<Closeable> live = ConcurrentHashMap.newKeySet();
     private final ExecutorService workers = Executors.newCachedThreadPool();
     private volatile boolean stopped;
     public final AtomicLong uploaded = new AtomicLong();
     public final AtomicLong downloaded = new AtomicLong();
     private volatile String requestedMode = "auto";
+    private volatile String dnsProfile = "system";
+    private volatile String dnsError;
+    public String dnsError(){return dnsError;}
+    private final Set<Closeable> dnsLive = ConcurrentHashMap.newKeySet();
+    public String dnsProfile() { return dnsProfile; }
+    public static boolean validDnsProfile(String profile) { return Arrays.asList("system","adguard","family","cloudflare").contains(profile); }
+    public static String dnsTarget(String profile,String original) {
+        if("adguard".equals(profile))return "94.140.14.14";
+        if("family".equals(profile))return "94.140.14.15";
+        if("cloudflare".equals(profile))return "1.1.1.1";
+        return original;
+    }
+    public synchronized boolean setDnsProfile(String profile) {
+        if(!validDnsProfile(profile))return false;
+        if(!profile.equals(dnsProfile)){dnsProfile=profile;dnsError=null;modeRevision.incrementAndGet();dialer.onDnsProfile(profile);for(Closeable flow:dnsLive)closeQuietly(flow);dnsLive.clear();}
+        return true;
+    }
     private final AtomicLong modeRevision = new AtomicLong(1);
     public volatile String hostTelemetry;
     public volatile long hostTelemetryNanos;
@@ -61,7 +83,7 @@ public final class Relay implements AutoCloseable {
     }
     public synchronized String controlStatus() {
         long age=hostTelemetryNanos==0?-1:TimeUnit.NANOSECONDS.toMillis(System.nanoTime()-hostTelemetryNanos);
-        return "{\"mode\":"+quote(requestedMode)+",\"revision\":"+modeRevision.get()+",\"uploaded\":"+uploaded.get()+",\"downloaded\":"+downloaded.get()+",\"network\":"+quote(dialer.networkInfo())+",\"hostAgeMs\":"+age+"}";
+        return "{\"mode\":"+quote(requestedMode)+",\"dnsProfile\":"+quote(dnsProfile)+",\"revision\":"+modeRevision.get()+",\"uploaded\":"+uploaded.get()+",\"downloaded\":"+downloaded.get()+",\"network\":"+quote(dialer.networkInfo()+(dnsError==null?"":" · DNS-over-HTTPS hatası: "+dnsError))+",\"hostAgeMs\":"+age+"}";
     }
     private void control(Endpoint endpoint,DataInputStream in,DataOutputStream out) throws IOException {
         endpoint.setReadTimeout(15000);out.writeByte(0);out.flush();
@@ -71,6 +93,9 @@ public final class Relay implements AutoCloseable {
             else if(command==2) {
                 int size=in.readUnsignedByte();if(size<1||size>16)throw new IOException("invalid mode length");
                 byte[] bytes=new byte[size];in.readFully(bytes);out.writeByte(setMode(new String(bytes,StandardCharsets.US_ASCII))?0:2);out.flush();
+            } else if(command==4) {
+                int size=in.readUnsignedByte();if(size<1||size>16)throw new IOException("invalid DNS profile length");
+                byte[] bytes=new byte[size];in.readFully(bytes);out.writeByte(setDnsProfile(new String(bytes,StandardCharsets.US_ASCII))?0:2);out.flush();
             } else if(command==3) {
                 int size=in.readUnsignedShort();if(size<2||size>4096)throw new IOException("invalid telemetry length");
                 byte[] bytes=new byte[size];in.readFully(bytes);
@@ -109,20 +134,29 @@ public final class Relay implements AutoCloseable {
         if (!host.matches("[A-Za-z0-9.:%_-]+")) { out.writeByte(3); out.flush(); return; }
         int port = in.readUnsignedShort();
         if (port == 0) { out.writeByte(3); out.flush(); return; }
-        if(mode==3) { if(!host.equals("control")||port!=1){out.writeByte(3);out.flush();return;}control(endpoint,in,out);return; }
+        if(mode==3) { if(!host.equals("control")||port!=1){out.writeByte(3);out.flush();return;}if(!controlSlots.tryAcquire()){out.writeByte(1);out.flush();return;}try{control(endpoint,in,out);}finally{controlSlots.release();}return; }
+        if(!dataSlots.tryAcquire()){out.writeByte(1);out.flush();return;}
+        try {
+        boolean dns=port==53;String dnsAtOpen=dnsProfile;
+        if(dns&&!"system".equals(dnsAtOpen)&&dialer.encryptedDns()){
+            dnsLive.add(endpoint);try{endpoint.setReadTimeout(60000);out.writeByte(0);out.flush();while(!stopped){int size=in.readUnsignedShort();if(size<12)throw new IOException("DNS frame too short");byte[] query=new byte[size];in.readFully(query);byte[] response;try{response=dialer.dns(dnsAtOpen,query);dnsError=null;}catch(IOException e){dnsError=e.getClass().getSimpleName();throw e;}if(!dnsAtOpen.equals(dnsProfile))throw new IOException("DNS profile changed");out.writeShort(response.length);out.write(response);out.flush();uploaded.addAndGet(query.length);downloaded.addAndGet(response.length);}}finally{dnsLive.remove(endpoint);}return;
+        }
+if(dns)host=dnsTarget(dnsAtOpen,host);
         Closeable remote;
         try { remote = mode == 1 ? dialer.tcp(host, port) : dialer.udp(host, port); }
         catch (IOException e) { out.writeByte(1); out.flush(); return; }
         synchronized (this) {
             if (stopped) { remote.close(); return; }
             live.add(remote);
+            if(dns){if(!dnsAtOpen.equals(dnsProfile)){remote.close();throw new IOException("DNS profile changed during dial");}dnsLive.add(endpoint);dnsLive.add(remote);}
         }
         try {
             out.writeByte(0); out.flush();
             endpoint.setReadTimeout(0);
             if (mode == 1) tcp(endpoint, (Socket)remote, in, out);
             else udp(endpoint, (DatagramFlow)remote, in, out);
-        } finally { live.remove(remote); closeQuietly(remote); }
+        } finally { live.remove(remote);if(dns){dnsLive.remove(endpoint);dnsLive.remove(remote);}closeQuietly(remote); }
+        }finally{dataSlots.release();}
     }
     private void tcp(Endpoint endpoint, Socket remote, InputStream in, OutputStream out) throws IOException {
         Future<?> upload = workers.submit(() -> {

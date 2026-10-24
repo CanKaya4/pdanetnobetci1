@@ -17,10 +17,17 @@ internal sealed class SystemNetwork: IAsyncDisposable
     readonly NamedPipeServerStream pipe;
     readonly CancellationTokenSource stop=new();
     Process? guardian;
+    StreamWriter? commands;readonly SemaphoreSlim commandLock=new(1,1);
+    async Task Command(string line){await commandLock.WaitAsync(stop.Token);try{if(commands==null)throw new IOException("Ağ yardımcısı hazır değil.");await commands.WriteLineAsync(line);}finally{commandLock.Release();}}
+    public Task UpdateTraffic(TrafficSettings settings)=>Active?Command(JsonSerializer.Serialize(new{type="traffic-settings",settings})):throw new IOException("Önce USB bağlantısını kurun.");
     Task? heartbeat,read;
     readonly object disposeGate=new();Task? disposal;
+    Guid adapterGuid;
     public bool Active {get;private set;}
     public string? SessionFolder {get;private set;}
+    public sealed record HotspotClient([property:System.Text.Json.Serialization.JsonPropertyName("mac")]string Mac,[property:System.Text.Json.Serialization.JsonPropertyName("names")]string[] Names);
+    public HotspotClient[] SharingClients {get;private set;}=Array.Empty<HotspotClient>();
+    public string? SharingClientsError {get;private set;}
     public string SharingStatus {get;private set;}="Windows paylaşımı etkin değil.";
     public SystemNetwork()
     {
@@ -44,9 +51,10 @@ internal sealed class SystemNetwork: IAsyncDisposable
         await pipe.WaitForConnectionAsync(timeout.Token);
         if(!GetNamedPipeClientProcessId(pipe.SafePipeHandle,out uint pid)||pid!=guardian.Id)throw new IOException("Ağ yardımcısının IPC kimliği eşleşmiyor.");
         var writer=new StreamWriter(pipe,new UTF8Encoding(false),4096,true){AutoFlush=true,NewLine="\n"};
-        await writer.WriteLineAsync(JsonSerializer.Serialize(new{Transport=transport,Token=token,MaxSeconds=maxSeconds,MaxPayloadBytes=maxSeconds==0?0L:1048576L,Profile=settings?.Mode??"auto",UploadMbps=settings?.UploadMbps??0,DownloadMbps=settings?.DownloadMbps??0,Adaptive=settings?.Adaptive??false}));token="";
-        heartbeat=Task.Run(async()=>{try{while(!stop.IsCancellationRequested){await writer.WriteLineAsync("heartbeat");await Task.Delay(1000,stop.Token);}}catch{}finally{try{writer.Dispose();}catch{}}});
-        read=Task.Run(async()=>{try{using var reader=new StreamReader(pipe,Encoding.UTF8,false,4096,true);while(await reader.ReadLineAsync(stop.Token) is string line){using var doc=JsonDocument.Parse(line);var item=doc.RootElement;string type=item.GetProperty("type").GetString()??"";if(type=="network-active"){Active=true;SessionFolder=item.GetProperty("session").GetString();}if(type=="sharing-state")SharingStatus=item.GetProperty("configured").GetBoolean()?"Windows ICS kaynağı: TetherMax · IPFORWARD koruması gözlendi · TV testi gerekli":"Windows paylaşımı etkin değil.";if(type=="sharing-error")SharingStatus="Paylaşım güvenlik hatası: "+item.GetProperty("message").GetString();if(type=="network-stopped"){Active=false;SharingStatus="TetherMax bağlantısı kapalı; paylaşım kurtarma sonucunu denetleyin.";}report(line);}}catch(Exception e){if(!stop.IsCancellationRequested)report("Ağ yardımcısı bağlantısı kapandı: "+e.Message);}finally{Active=false;if(!stop.IsCancellationRequested)report(JsonSerializer.Serialize(new{type="network-channel-closed"}));}});
+        await writer.WriteLineAsync(JsonSerializer.Serialize(new{Transport=transport,Token=token,MaxSeconds=maxSeconds,MaxPayloadBytes=maxSeconds==0?0L:1048576L,Profile=settings?.Mode??"auto",UploadMbps=settings?.UploadMbps??0,DownloadMbps=settings?.DownloadMbps??0,Adaptive=settings?.Adaptive??false,DnsProfile=settings?.DnsProfile??"adguard"}));token="";
+        commands=writer;
+        heartbeat=Task.Run(async()=>{try{while(!stop.IsCancellationRequested){await Command("heartbeat");await Task.Delay(1000,stop.Token);}}catch{}finally{try{writer.Dispose();}catch{}}});
+        read=Task.Run(async()=>{try{using var reader=new StreamReader(pipe,Encoding.UTF8,false,4096,true);while(await reader.ReadLineAsync(stop.Token) is string line){using var doc=JsonDocument.Parse(line);var item=doc.RootElement;string type=item.GetProperty("type").GetString()??"";if(type=="network-active"){Active=false;adapterGuid=item.GetProperty("guid").GetGuid();SessionFolder=item.GetProperty("session").GetString();}if(type=="windows-connectivity"){var result=item.GetProperty("result");Active=Readiness.Healthy(result)&&result.GetProperty("adapterGuid").GetGuid()==adapterGuid;}if(type=="sharing-state"){SharingClients=item.TryGetProperty("clients",out var clients)?clients.Deserialize<HotspotClient[]>()??Array.Empty<HotspotClient>():Array.Empty<HotspotClient>();SharingClientsError=item.TryGetProperty("clientsError",out var clientError)?clientError.GetString():null;}if(type=="sharing-state")SharingStatus=item.GetProperty("configured").GetBoolean()?"Windows ICS kaynağı: TetherMax · IPFORWARD koruması gözlendi · TV testi gerekli":"Windows paylaşımı etkin değil.";if(type=="sharing-error")SharingStatus="Paylaşım güvenlik hatası: "+item.GetProperty("message").GetString();if(type=="network-stopped"){Active=false;SharingStatus="TetherMax bağlantısı kapalı; paylaşım kurtarma sonucunu denetleyin.";}report(line);}}catch(Exception e){if(!stop.IsCancellationRequested)report("Ağ yardımcısı bağlantısı kapandı: "+e.Message);}finally{Active=false;if(!stop.IsCancellationRequested)report(JsonSerializer.Serialize(new{type="network-channel-closed"}));}});
     }
     public ValueTask DisposeAsync() {lock(disposeGate)return new ValueTask(disposal??=DisposeCore());}
     async Task DisposeCore()

@@ -19,9 +19,23 @@ public static class Program
         try {
             ProcessLaunch.DetachStandardHandleInheritance();
             if(args.Length==0||args.SequenceEqual(new[]{"status"})) {Console.WriteLine("TetherMax network controller inactive; no OS changes. connect requires separate global routing and USB consent.");return 0;}
+            if(args.Length==4&&args[0]=="hotspot-start"&&args[3]=="--approve-windows-sharing") {
+                Admin();if(!Regex.IsMatch(args[2],"^TetherMax-Hotspot-[a-f0-9]{32}$"))throw new IOException("Invalid hotspot pipe");
+                using var channel=new NamedPipeClientStream(".",args[2],PipeDirection.InOut,PipeOptions.Asynchronous);
+                await channel.ConnectAsync(15000);using var input=new StreamReader(channel,Encoding.UTF8,false,4096,true);using var output=new StreamWriter(channel,new UTF8Encoding(false),4096,true){AutoFlush=true};
+                try {
+                    using var deadline=new CancellationTokenSource(TimeSpan.FromSeconds(15));string line=await input.ReadLineAsync(deadline.Token)??throw new IOException("Hotspot request missing");
+                    if(line.Length>2048)throw new IOException("Hotspot request too large");var request=JsonSerializer.Deserialize<NativeMobileHotspot.Request>(line)??throw new IOException("Invalid hotspot request");line="";
+                    var j=new Journal(args[1]);using var lease=j.Lock(TimeSpan.FromSeconds(55));var p=j.Read();
+                    var adapter=NativeMobileHotspot.Start(j,p,request,new NativeBackend(j));await output.WriteLineAsync(JsonSerializer.Serialize(new{adapter}));
+                }catch(Exception e){await output.WriteLineAsync(JsonSerializer.Serialize(new{error=e.Message}));return 1;}return 0;
+            }
             if((args.Length==4&&args[0]=="share"&&args[3]=="--approve-windows-sharing")||(args.Length==3&&args[0]=="unshare"&&args[2]=="--approve-windows-sharing")){
                 Admin();var j=new Journal(args[1]);using var lease=j.Lock(TimeSpan.FromSeconds(55));var p=j.Read();
-                if(args[0]=="share")OwnedSharing.Start(j,p,Guid.Parse(args[2]),new NativeBackend(j));else OwnedSharing.Stop(j,p,new NativeBackend(j));
+                string reports=Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),"TetherMax","reports");Directory.CreateDirectory(reports);
+                string error=Path.Combine(reports,"sharing-error-"+p.Id.ToString("N")+".txt");
+                try{if(args[0]=="share")OwnedSharing.Start(j,p,Guid.Parse(args[2]),new NativeBackend(j));else OwnedSharing.Stop(j,p,new NativeBackend(j));File.Delete(error);}
+                catch(Exception e){File.WriteAllText(error,e.Message+" (0x"+e.HResult.ToString("X8")+")");throw;}
                 return 0;
             }
             if(args.SequenceEqual(new[]{"recover-stale","--approve-network-recovery"})) {
@@ -41,7 +55,7 @@ public static class Program
             Admin();return await Connect(args[1]);
         }catch(Exception e){Console.Error.WriteLine(e.Message);return 1;}
     }
-    sealed record Request(string Transport,string Token,int MaxSeconds,long MaxPayloadBytes,string Profile="auto",double UploadMbps=0,double DownloadMbps=0,bool Adaptive=false);
+    sealed record Request(string Transport,string Token,int MaxSeconds,long MaxPayloadBytes,string Profile="auto",double UploadMbps=0,double DownloadMbps=0,bool Adaptive=false,string DnsProfile="adguard");
     static async Task<string> CellularStatus(string engine,string transport,string bearer)
     {
         var start=new ProcessStartInfo(engine){UseShellExecute=false,CreateNoWindow=true,RedirectStandardInput=true,RedirectStandardOutput=true,RedirectStandardError=true};
@@ -75,6 +89,7 @@ public static class Program
         if(!Regex.IsMatch(request.Transport,"^127\\.0\\.0\\.1:[0-9]{1,5}$")||!Regex.IsMatch(request.Token,"^[a-f0-9]{32}$")||request.MaxSeconds<0||request.MaxSeconds>300||request.MaxPayloadBytes<0||request.MaxPayloadBytes>10*1024*1024||(request.MaxSeconds>0&&request.MaxPayloadBytes==0))
             throw new IOException("Invalid private transport or bounded test duration");
         if(!new[]{"auto","gaming","streaming","daily","maximum"}.Contains(request.Profile)||!double.IsFinite(request.UploadMbps)||!double.IsFinite(request.DownloadMbps)||request.UploadMbps<0||request.UploadMbps>10000||request.DownloadMbps<0||request.DownloadMbps>10000||(request.Adaptive&&request.UploadMbps==0))throw new IOException("Invalid traffic profile");
+        new LiveTrafficSettings(request.Profile,request.UploadMbps,request.DownloadMbps,request.Adaptive,request.DnsProfile).Validate();
         // Refuse a new activation while earlier durable intents need recovery.
         foreach(string folder in Directory.EnumerateDirectories(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData),"TetherMax-Network-*"))
             if(File.Exists(Path.Combine(folder,"intent.json"))&&!File.Exists(Path.Combine(folder,"complete")))throw new IOException("Unrecovered prior network session: "+folder);
@@ -85,7 +100,7 @@ public static class Program
         journal.WriteNew("android-before.json",await CellularStatus(engine,request.Transport,bearer));
         var start=new ProcessStartInfo(engine){UseShellExecute=false,CreateNoWindow=true,RedirectStandardInput=true,RedirectStandardOutput=true,RedirectStandardError=true};
         foreach(string arg in new[]{"ip-worker","--approve-adapter-change","--approve-usb-test","--transport",request.Transport,"--payload-budget-bytes",request.MaxPayloadBytes.ToString(System.Globalization.CultureInfo.InvariantCulture),"--wintun-dll",dll,"--journal",journal.PathFor("adapter.jsonl")})start.ArgumentList.Add(arg);
-        foreach(string arg in new[]{"--profile",request.Profile,"--upload-mbps",request.UploadMbps.ToString(System.Globalization.CultureInfo.InvariantCulture),"--download-mbps",request.DownloadMbps.ToString(System.Globalization.CultureInfo.InvariantCulture),"--traffic-telemetry"})start.ArgumentList.Add(arg);
+        foreach(string arg in new[]{"--profile",request.Profile,"--upload-mbps",request.UploadMbps.ToString(System.Globalization.CultureInfo.InvariantCulture),"--download-mbps",request.DownloadMbps.ToString(System.Globalization.CultureInfo.InvariantCulture),"--traffic-telemetry","--dns-profile",request.DnsProfile})start.ArgumentList.Add(arg);
         if(request.Adaptive)start.ArgumentList.Add("--adaptive");
         using var worker=Process.Start(start)??throw new IOException("IP worker did not start");
         var stderr=worker.StandardError.ReadToEndAsync();
@@ -93,7 +108,9 @@ public static class Program
         int maxSeconds=request.MaxSeconds;request=request with{Token=""};
         // Heartbeats to the native worker and supervisor lease continue while
         // startup/configuration is in progress. They never carry the bearer.
-        Task pulse=Task.Run(async()=>{try{while(!lifetime.IsCancellationRequested){journal.Pulse();await worker.StandardInput.BaseStream.WriteAsync(new byte[]{0},lifetime.Token);await worker.StandardInput.BaseStream.FlushAsync(lifetime.Token);await Task.Delay(1000,lifetime.Token);}}catch{lifetime.Cancel();}});
+        using var inputLock=new SemaphoreSlim(1);
+        async Task WorkerInput(byte[] frame){await inputLock.WaitAsync(lifetime.Token);try{await worker.StandardInput.BaseStream.WriteAsync(frame,lifetime.Token);await worker.StandardInput.BaseStream.FlushAsync(lifetime.Token);}finally{inputLock.Release();}}
+        Task pulse=Task.Run(async()=>{try{while(!lifetime.IsCancellationRequested){journal.Pulse();await WorkerInput(new byte[]{0});await Task.Delay(1000,lifetime.Token);}}catch{lifetime.Cancel();}});
         Plan? plan=null;Process? watcher=null;Task? telemetry=null,sharingMonitor=null;
         using var sharingStop=CancellationTokenSource.CreateLinkedTokenSource(lifetime.Token);
         JsonElement? lastCounters=null; Task? connectivity=null; using var connectivityStop=CancellationTokenSource.CreateLinkedTokenSource(lifetime.Token);
@@ -126,8 +143,11 @@ public static class Program
             telemetry=Task.Run(async()=>{try{using var log=new StreamWriter(new FileStream(journal.PathFor("host-counters.jsonl"),FileMode.CreateNew,FileAccess.Write,FileShare.Read)){AutoFlush=true};while(await worker.StandardOutput.ReadLineAsync() is string data){using var item=JsonDocument.Parse(data);if(item.RootElement.TryGetProperty("type",out var sampleType)&&sampleType.GetString() is "ip-counters" or "ip-counters-final")lastCounters=item.RootElement.Clone();await log.WriteLineAsync(JsonSerializer.Serialize(new{observedAt=DateTimeOffset.UtcNow,payload=item.RootElement.Clone()}));try{await Send(new{type="ip-counters",payload=item.RootElement.Clone()});}catch{}}}catch{lifetime.Cancel();}});
             await Send(new{type="network-active",adapter=name,guid,session=journal.Folder,scope="system-wide IPv4; non-loopback IPv6 blocked; not carrier certification"});
             sharingMonitor=Task.Run(async()=>{try{while(!sharingStop.IsCancellationRequested){await Task.Delay(5000,sharingStop.Token);try{await Send(OwnedSharing.Observe(journal,plan));}catch(IOException e) when((e.HResult&0xffff)==32||(e.HResult&0xffff)==33){/* Sharing helper or recovery owns the lock. */}}}catch(OperationCanceledException){}catch(Exception e){try{await Send(new{type="sharing-error",message=e.Message});}catch{}lifetime.Cancel();}});
-            connectivity=Task.Run(async()=>{try{string result=await ConnectivityChecks.Run(guid,connectivityStop.Token);journal.WriteNew("windows-connectivity.json",result);await Send(new{type="windows-connectivity",result=JsonSerializer.Deserialize<JsonElement>(result)});}catch(Exception e){try{journal.WriteNew("windows-connectivity-error.txt",e.Message);}catch{}}});
-            Task heartbeat=Task.Run(async()=>{try{while(!lifetime.IsCancellationRequested){using var timeout=CancellationTokenSource.CreateLinkedTokenSource(lifetime.Token);timeout.CancelAfter(TimeSpan.FromSeconds(5));string? command=await reader.ReadLineAsync(timeout.Token);if(command!="heartbeat")break;}}catch{}finally{lifetime.Cancel();}});
+            connectivity=Task.Run(async()=>{try{string result=await ConnectivityChecks.Run(guid,connectivityStop.Token);journal.WriteNew("windows-connectivity.json",result);await Send(new{type="windows-connectivity",result=JsonSerializer.Deserialize<JsonElement>(result)});}catch(Exception e){try{journal.WriteNew("windows-connectivity-error.txt",e.Message);await Send(new{type="network-error",message="Tunnel connectivity verification failed"});}catch{}lifetime.Cancel();}});
+            Task heartbeat=Task.Run(async()=>{try{while(!lifetime.IsCancellationRequested){using var timeout=CancellationTokenSource.CreateLinkedTokenSource(lifetime.Token);timeout.CancelAfter(TimeSpan.FromSeconds(5));string? command=await reader.ReadLineAsync(timeout.Token);if(command=="heartbeat")continue;if(command==null||command.Length>4096)break;
+                    using var change=JsonDocument.Parse(command);var value=change.RootElement;
+                    if(value.GetProperty("type").GetString()!="traffic-settings")break;
+                    var settings=value.GetProperty("settings").Deserialize<LiveTrafficSettings>()??throw new IOException("Settings missing");await WorkerInput(settings.Frame());}}catch{}finally{lifetime.Cancel();}});
             var uptime=Stopwatch.StartNew();
             while(!lifetime.IsCancellationRequested&&!worker.HasExited&&watcher is {HasExited:false}&&(maxSeconds==0||uptime.Elapsed<TimeSpan.FromSeconds(maxSeconds)))await Task.Delay(100,lifetime.Token);
         }catch(Exception e){try{journal.WriteNew("activation-error.txt",e.ToString());}catch{}try{await Send(new{type="network-error",message=e.Message});}catch{}}

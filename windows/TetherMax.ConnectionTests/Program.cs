@@ -12,9 +12,23 @@ try {
 
  var cellular=new CellularAvailability();Require(!cellular.Observe(null)&&!cellular.Observe("unavailable")&&cellular.Observe("unavailable")&&!cellular.Observe(null),"cellular recovery debounce failed");
  Require(!cellular.Observe("CELLULAR Network fixture")&&!cellular.Observe(null)&&!cellular.Observe(null)&&cellular.Observe(null),"cellular recovery did not reset after good sample");Console.WriteLine("PASS transient cellular loss is debounced and recovery is requested once");
+ for(int i=0;i<10;i++)Require(!cellular.Observe("control-unavailable"),"control delay tore down a working data path");
+ string fixturePassword="Loopback-Only-Password";var encrypted=System.Security.Cryptography.ProtectedData.Protect(System.Text.Encoding.UTF8.GetBytes(fixturePassword),null,System.Security.Cryptography.DataProtectionScope.CurrentUser);var preferences=new HotspotPreferences("fixture",1,Convert.ToBase64String(encrypted));Require(preferences.Password==fixturePassword,"DPAPI password roundtrip failed");Require(!System.Text.Json.JsonSerializer.Serialize(preferences).Contains(fixturePassword),"password property leaked into JSON");Console.WriteLine("PASS Windows DPAPI hotspot password roundtrip; plaintext excluded from serialized settings");
+ var requestedSettings=new TrafficSettings("gaming",12,60,true,"adguard");
+ using(var ack=System.Text.Json.JsonDocument.Parse(System.Text.Json.JsonSerializer.Serialize(new{phoneSettingsConfirmed=true,settings=requestedSettings})))Require(requestedSettings.Acknowledged(ack.RootElement),"complete settings acknowledgement rejected");
+ using(var oldAck=System.Text.Json.JsonDocument.Parse(System.Text.Json.JsonSerializer.Serialize(new{phoneSettingsConfirmed=true,settings=requestedSettings with{UploadMbps=10}})))Require(!requestedSettings.Acknowledged(oldAck.RootElement),"stale ceiling acknowledged");
+ using(var unconfirmed=System.Text.Json.JsonDocument.Parse(System.Text.Json.JsonSerializer.Serialize(new{phoneSettingsConfirmed=false,settings=requestedSettings})))Require(!requestedSettings.Acknowledged(unconfirmed.RootElement),"phone confirmation skipped");
+ Console.WriteLine("PASS exact live mode/DNS/ceiling acknowledgement and control-channel debounce");
  using(var empty=System.Text.Json.JsonDocument.Parse("{\"checks\":[]}"))Require(!Readiness.Healthy(empty.RootElement),"empty health accepted");
  using(var partial=System.Text.Json.JsonDocument.Parse("{\"checks\":[{\"name\":\"windows-https-no-proxy\",\"passed\":true}]}"))Require(!Readiness.Healthy(partial.RootElement),"partial health accepted");
  Console.WriteLine("PASS missing/partial health never reports connected");
+ string checks="[{\"name\":\"windows-https-no-proxy\",\"passed\":true},{\"name\":\"windows-system-dns\",\"passed\":true},{\"name\":\"windows-direct-udp-dns\",\"passed\":true}]";
+ foreach(var counters in new[]{"",",\"adapterGuid\":\"00000000-0000-0000-0000-000000000000\",\"adapterBytes\":{\"sent\":1,\"received\":1}",",\"adapterGuid\":\"11111111-1111-1111-1111-111111111111\",\"adapterBytes\":{\"sent\":0,\"received\":1}"}) {
+  using var health=System.Text.Json.JsonDocument.Parse("{\"checks\":"+checks+counters+"}");Require(!Readiness.Healthy(health.RootElement),"Internet without proven tunnel traffic accepted");
+ }
+ using(var health=System.Text.Json.JsonDocument.Parse("{\"checks\":"+checks+",\"adapterGuid\":\"11111111-1111-1111-1111-111111111111\",\"adapterBytes\":{\"sent\":100,\"received\":100}}"))Require(Readiness.Healthy(health.RootElement),"proven tunnel checks rejected");
+ Console.WriteLine("PASS HTTPS/DNS success requires nonempty tunnel identity and bidirectional interface traffic");
+
  using var deadline=new CancellationTokenSource(TimeSpan.FromSeconds(5));
  int observations=0;await Readiness.WaitFor(()=>Task.FromResult(++observations==3),deadline.Token);Require(observations==3,"late readiness was skipped");Console.WriteLine("PASS delayed readiness is observed");
  using(var canceled=new CancellationTokenSource()){canceled.Cancel();bool stopped=false;try{await Readiness.WaitFor(()=>Task.FromResult(false),canceled.Token);}catch(OperationCanceledException){stopped=true;}Require(stopped,"cancel ignored");}Console.WriteLine("PASS user cancellation stops readiness");

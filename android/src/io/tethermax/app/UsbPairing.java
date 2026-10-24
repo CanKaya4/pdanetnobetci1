@@ -34,7 +34,8 @@ final class UsbPairing implements AutoCloseable {
         worker = new Thread(() -> {
             while (!closed) {
                 try (LocalSocket socket = listener.accept()) {
-                    active = socket; socket.setSoTimeout(90000);
+                    synchronized (this) { if (closed) break; active = socket; }
+                    socket.setSoTimeout(90000);
                     long now = android.os.SystemClock.elapsedRealtime();
                     if (now - window > 60000) { window = now; attempts = 0; }
                     exchange(socket);
@@ -105,7 +106,7 @@ final class UsbPairing implements AutoCloseable {
         if (!context.getSharedPreferences("pairing",Context.MODE_PRIVATE).edit().clear().commit()) throw new IllegalStateException("Trust reset failed");
         try { KeyStore store = KeyStore.getInstance("AndroidKeyStore"); store.load(null); store.deleteEntry(ALIAS); } catch (Exception ignored) {}
     }
-    @Override public void close() {
+    @Override public synchronized void close() {
         closed = true; confirm(false);
         try { listener.close(); } catch (IOException ignored) {}
         LocalSocket socket = active; if (socket != null) try { socket.close(); } catch (IOException ignored) {}

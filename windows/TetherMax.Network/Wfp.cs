@@ -96,7 +96,8 @@ public sealed class Wfp:IDisposable
         IntPtr source=Marshal.AllocHGlobal(8),destination=Marshal.AllocHGlobal(8),conditions=IntPtr.Zero;
         try{
             Marshal.WriteInt64(source,unchecked((long)s.PrivateLuid));Marshal.WriteInt64(destination,unchecked((long)p.Luid));
-            var list=new List<Condition>{new(){Key=new Guid("4cd62a49-59c3-4969-b7f3-bda5d32890a4"),Match=0,Value=new Value{Type=4,Data=unchecked((ulong)source.ToInt64())}}};
+            // Match the arrival interface explicitly; return packets arrive on Wintun.
+            var list=new List<Condition>{new(){Key=new Guid("2311334d-c92d-45bf-9496-edf447820e2d"),Match=0,Value=new Value{Type=3,Data=s.PrivateIndex}}};
             if(ipv4)list.Add(new(){Key=new Guid("1076b8a5-6323-4c5e-9810-e8d3fc9e6136"),Match=10,Value=new Value{Type=4,Data=unchecked((ulong)destination.ToInt64())}});
             conditions=Marshal.AllocHGlobal(Marshal.SizeOf<Condition>()*list.Count);
             for(int i=0;i<list.Count;i++)Marshal.StructureToPtr(list[i],conditions+i*Marshal.SizeOf<Condition>(),false);

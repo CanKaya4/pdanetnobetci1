@@ -23,7 +23,8 @@ public final class MainActivity extends Activity {
     private TextView traffic,homeTraffic;
     private AlertDialog pairingDialog;
     private TrafficPlot speedPlot,delayPlot;
-    private Spinner profile;
+    private Spinner dns;
+    private static final String[] DNS_IDS={"adguard","family","cloudflare","system"};
     private final Button[] modeButtons=new Button[5];
     private static final String[] MODE_DESCRIPTIONS={"Akıllı profil seçimi","Gecikme odaklı öncelikler","Video ve paylaşılan bağlantı","Dengeli kullanım","Aktarım odaklı profil"};
     private static final String[] MODE_IDS={"auto","gaming","streaming","daily","maximum"};
@@ -59,7 +60,7 @@ public final class MainActivity extends Activity {
         String details="Windows politika onayı / gecikme ölçümü bekleniyor";
         Relay relay=current==null?null:current.currentRelay();
         if(relay!=null){
-            for(int i=0;i<MODE_IDS.length;i++)if(MODE_IDS[i].equals(relay.requestedMode())&&profile.getSelectedItemPosition()!=i)profile.setSelection(i);
+            if(dns!=null)for(int i=0;i<DNS_IDS.length;i++)if(DNS_IDS[i].equals(relay.dnsProfile())&&dns.getSelectedItemPosition()!=i)dns.setSelection(i);
             if(relay.hostTelemetry!=null&&System.nanoTime()-relay.hostTelemetryNanos<5000000000L){
                 try {
                     JSONObject value=new JSONObject(relay.hostTelemetry);
@@ -70,8 +71,9 @@ public final class MainActivity extends Activity {
                 }catch(JSONException ignored){details="Windows ölçüm kaydı okunamadı";}
             }
         }
+        if(relay!=null&&relay.dnsError()!=null)details="DNS-over-HTTPS hatası: "+relay.dnsError()+" · Korumasız DNS’e geçilmedi.\n"+details;
         if(homeTraffic!=null)homeTraffic.setText(TunnelService.networkInfo+"\n"+(Float.isNaN(download)?"Hız ölçümü bekleniyor":String.format(java.util.Locale.ROOT,"↓ %.2f Mbps     ↑ %.2f Mbps",download,upload))+"\nAktarılan toplam · "+(up+down)+" B\nProfil · "+modeLabel(TunnelService.savedMode(this))+"\n"+(relay!=null&&relay.hostTelemetry!=null&&System.nanoTime()-relay.hostTelemetryNanos<5000000000L?"Güvenilen Windows istemcisi bağlı":"Windows istemcisi bekleniyor"));
-        if(relay!=null&&relay.hostTelemetry!=null&&System.nanoTime()-relay.hostTelemetryNanos<5000000000L)status.setText("Windows bağlı\nGüvenli USB aktarımı etkin");
+        if(current!=null&&current.running()&&relay!=null&&relay.hostTelemetry!=null&&System.nanoTime()-relay.hostTelemetryNanos<5000000000L)status.setText("Windows bağlı\nGüvenli USB aktarımı etkin");
         for(int i=0;i<modeButtons.length;i++)if(modeButtons[i]!=null)modeButtons[i].setText((MODE_IDS[i].equals(TunnelService.savedMode(this))?"✓ ":"")+MODE_LABELS[i]+"\n"+MODE_DESCRIPTIONS[i]);
         if(traffic!=null)traffic.setText(TunnelService.networkInfo+"\nYükleme: "+up+" B · İndirme: "+down+" B\n"+(Float.isNaN(upload)?"Hız örneği bekleniyor":String.format(java.util.Locale.ROOT,"İndirme %.3f / Yükleme %.3f Mbps",download,upload))+"\n"+details+"\nAktarılan uygulama verisi; operatör faturalandırması değildir.");
         if(speedPlot!=null)speedPlot.add(download,upload);if(delayPlot!=null)delayPlot.add(rtt,jitter);
@@ -114,7 +116,7 @@ public final class MainActivity extends Activity {
         ScrollView scroll = new ScrollView(this); scroll.setFillViewport(true); scroll.setBackgroundColor(Color.parseColor(dark ? "#101827" : "#EFF3F8"));
         content = new LinearLayout(this); content.setOrientation(LinearLayout.VERTICAL); content.setPadding(dp(20), dp(28), dp(20), dp(28)); scroll.addView(content);
         LinearLayout brand=new LinearLayout(this);brand.setGravity(Gravity.CENTER_VERTICAL);ImageView logo=new ImageView(this);logo.setImageResource(getResources().getIdentifier("tethermax","drawable",getPackageName()));brand.addView(logo,new LinearLayout.LayoutParams(dp(52),dp(52)));TextView title=text("  TetherMax",32,ink);title.setTypeface(null,Typeface.BOLD);brand.addView(title);content.addView(brand);
-        content.addView(text("Güvenli USB internet · 1.0.0-rc.1", 14, muted));
+        content.addView(text("Güvenli USB internet · 1.0.0-rc.3", 14, muted));
         LinearLayout connection = card("BAĞLANTI"); status = text(TunnelService.status, 22, ink); connection.addView(status);
         homeTraffic=text("Windows istemcisi bekleniyor",16,muted);connection.addView(homeTraffic);
         action(connection, "Hücresel motoru başlat", () -> {
@@ -134,13 +136,14 @@ public final class MainActivity extends Activity {
         analysis.addView(text("Mavi DNS gidiş-dönüş · yeşil jitter. Ölçüm yoksa grafik boş kalır. Adaptif ölçüm Windows'tan açılır; mobil veri kullanır.",12,muted));
         Spinner history=new Spinner(this);history.setAdapter(new ArrayAdapter<String>(this,android.R.layout.simple_spinner_dropdown_item,new String[]{"1 dakika","5 dakika","30 dakika"}));analysis.addView(history);history.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener(){public void onNothingSelected(AdapterView<?> p){}public void onItemSelected(AdapterView<?> p,View v,int position,long id){int minutes=new int[]{1,5,30}[position];speedPlot.setMinutes(minutes);delayPlot.setMinutes(minutes);}});
         LinearLayout modes=card("TRAFİK PROFİLİ");
-        profile=new Spinner(this);profile.setAdapter(new ArrayAdapter<String>(this,android.R.layout.simple_spinner_dropdown_item,MODE_LABELS));
-        String savedMode=TunnelService.savedMode(this);for(int i=0;i<MODE_IDS.length;i++)if(MODE_IDS[i].equals(savedMode))profile.setSelection(i);
-        profile.setVisibility(View.GONE);modes.addView(profile);
-        for(int i=0;i<MODE_IDS.length;i++){final int selected=i;modeButtons[i]=action(modes,MODE_LABELS[i]+"\n"+MODE_DESCRIPTIONS[i],()->profile.setSelection(selected));}
-        profile.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener(){public void onNothingSelected(AdapterView<?> parent){}public void onItemSelected(AdapterView<?> parent,View view,int position,long id){TunnelService.requestMode(MainActivity.this,MODE_IDS[position]);}});
+        for(int i=0;i<MODE_IDS.length;i++){final int selected=i;modeButtons[i]=action(modes,MODE_LABELS[i]+"\n"+MODE_DESCRIPTIONS[i],()->{TunnelService.requestMode(MainActivity.this,MODE_IDS[selected]);refreshTraffic(TunnelService.instance);});}
         modes.addView(text("Windows bağlandığında seçim aynı USB motorunun zamanlayıcısına iletilir. Manuel seçim otomatik oyun algılamasıyla değiştirilmez. Sistem geneli yönlendirme açılmaz.",14,muted));
         LinearLayout scope = card("AYARLAR");
+        scope.addView(text("DNS filtresi · tüm paylaşılan normal DNS sorguları",18,ink));
+        dns=new Spinner(this);dns.setAdapter(new ArrayAdapter<String>(this,android.R.layout.simple_spinner_dropdown_item,new String[]{"AdGuard DoH · reklam / izleyici filtresi","AdGuard Aile DoH","Cloudflare DoH","Özgün DNS"}));
+        String savedDns=TunnelService.savedDns(this);for(int i=0;i<DNS_IDS.length;i++)if(DNS_IDS[i].equals(savedDns))dns.setSelection(i);scope.addView(dns);
+        dns.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener(){public void onNothingSelected(AdapterView<?> p){}public void onItemSelected(AdapterView<?> p,View v,int i,long id){TunnelService.requestDns(MainActivity.this,DNS_IDS[i]);}});
+        scope.addView(text("Şifreli DNS kullanan uygulamalar bu filtreden ayrı çalışabilir. YouTube reklamlarının tamamı DNS ile engellenmez.",13,muted));
         scope.addView(text("TCP / UDP aktarım motoru", 20, ink));
         scope.addView(text("Ölçümler yalnızca TetherMax aktarımına aittir. Operatör faturalandırması veya oyun performansı için garanti verilmez.", 14, muted));
         action(scope,"Koyu / açık tema",()->{getSharedPreferences("appearance",MODE_PRIVATE).edit().putBoolean("dark",!dark).apply();recreate();});

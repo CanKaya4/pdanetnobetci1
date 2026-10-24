@@ -17,13 +17,14 @@ import (
 )
 
 type trafficFlags struct {
-	mode, shared                 *string
+	mode, shared, dns            *string
 	up, down                     *float64
 	adaptive, control, telemetry *bool
 }
 
 func addTrafficFlags(f *flag.FlagSet) trafficFlags {
 	return trafficFlags{
+		dns:       f.String("dns-profile", "system", "system/adguard/family/cloudflare"),
 		mode:      f.String("profile", "auto", "auto/gaming/streaming/daily/maximum"),
 		up:        f.Float64("upload-mbps", 0, "explicit measured upload ceiling; 0 leaves pacing uncalibrated"),
 		down:      f.Float64("download-mbps", 0, "delivery ceiling; does not control cellular UDP radio capacity"),
@@ -34,7 +35,7 @@ func addTrafficFlags(f *flag.FlagSet) trafficFlags {
 	}
 }
 func (f trafficFlags) manager() (*traffic.Manager, error) {
-	return traffic.New(traffic.Settings{Mode: traffic.Mode(*f.mode), UploadMbps: *f.up, DownloadMbps: *f.down, Adaptive: *f.adaptive})
+	return traffic.New(traffic.Settings{DNSProfile: *f.dns, Mode: traffic.Mode(*f.mode), UploadMbps: *f.up, DownloadMbps: *f.down, Adaptive: *f.adaptive})
 }
 func (f trafficFlags) prefixes() ([]netip.Prefix, error) {
 	var out []netip.Prefix
@@ -96,6 +97,11 @@ func startTrafficRuntime(parent context.Context, cancelParent context.CancelFunc
 			}
 		}()
 		pending := m.Settings().Mode
+		pendingDNS := m.Settings().DNSProfile
+		if pendingDNS == "" {
+			pendingDNS = "system"
+		}
+		confirmed := false
 		var seen uint64
 		phone := "unavailable"
 		lastNetwork := ""
@@ -118,6 +124,11 @@ func startTrafficRuntime(parent context.Context, cancelParent context.CancelFunc
 					emit(map[string]any{"type": "traffic-error", "message": err.Error()})
 				} else {
 					pending = s.Mode
+					pendingDNS = s.DNSProfile
+					if pendingDNS == "" {
+						pendingDNS = "system"
+					}
+					confirmed = false
 				}
 			case <-ticker.C:
 				ticks++
@@ -141,6 +152,12 @@ func startTrafficRuntime(parent context.Context, cancelParent context.CancelFunc
 								pending = ""
 							}
 						}
+						if err == nil && pendingDNS != "" {
+							err = remote.SetDNS(pendingDNS)
+							if err == nil {
+								pendingDNS = ""
+							}
+						}
 						if err == nil {
 							var status bridge.RemoteStatus
 							status, err = remote.Status()
@@ -152,18 +169,21 @@ func startTrafficRuntime(parent context.Context, cancelParent context.CancelFunc
 									}
 									lastNetwork = phone
 								}
-								if status.Revision != seen && status.Mode != m.Settings().Mode {
+								if status.Revision != seen && (status.Mode != m.Settings().Mode || status.DNSProfile != m.Settings().DNSProfile) {
 									change := m.Settings()
 									change.Mode = status.Mode
+									change.DNSProfile = status.DNSProfile
 									err = m.Configure(change)
 								}
 								seen = status.Revision
+								confirmed = pending == "" && pendingDNS == "" && status.Mode == m.Settings().Mode && status.DNSProfile == m.Settings().DNSProfile
 							}
 						}
 						if err != nil {
 							remote.Close()
 							remote = nil
-							phone = "unavailable"
+							phone = "control-unavailable"
+							confirmed = false
 						}
 					}
 				}
@@ -176,13 +196,15 @@ func startTrafficRuntime(parent context.Context, cancelParent context.CancelFunc
 					if err := remote.Publish(snapshot); err != nil {
 						remote.Close()
 						remote = nil
-						phone = "unavailable"
+						phone = "control-unavailable"
+						confirmed = false
 					}
 				}
 				emit(struct {
 					traffic.Snapshot
-					PhoneNetwork string `json:"phoneNetwork"`
-				}{snapshot, phone})
+					PhoneNetwork           string `json:"phoneNetwork"`
+					PhoneSettingsConfirmed bool   `json:"phoneSettingsConfirmed"`
+				}{snapshot, phone, confirmed})
 			}
 		}
 	}()

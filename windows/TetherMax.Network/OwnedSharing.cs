@@ -8,6 +8,7 @@ public sealed record SharingAddress(string IPAddress,int PrefixLength);
 public sealed record SharingState(Guid PrivateGuid,uint PrivateIndex,ulong PrivateLuid,Guid ForwardV4,Guid ForwardV6,
     bool Dhcp,SharingAddress[] Addresses,string[] Dns)
 {
+    public bool NativeManaged {get;init;}
     public void Validate(Plan p)
     {
         p.Validate();
@@ -20,7 +21,7 @@ public sealed record SharingState(Guid PrivateGuid,uint PrivateIndex,ulong Priva
 }
 
 // Windows' documented INetSharingConfiguration is the NAT/DHCP provider.
-// MyPublicWiFi remains the access-point owner, in No Internet Sharing mode.
+// The desktop owns its Wi-Fi Direct publisher; no third-party packet driver is required.
 // The existing protected intent, watcher and SYSTEM rescue also own this lease.
 public static class OwnedSharing
 {
@@ -31,19 +32,30 @@ public static class OwnedSharing
         if(!File.Exists(journal.PathFor("sharing.json")))return null;
         var s=JsonSerializer.Deserialize<SharingState>(journal.ReadPublished("sharing.json"))??throw new IOException("Sharing intent missing");s.Validate(p);return s;
     }
-    public static string SnapshotScript(Guid privateGuid)=>Connections+
-        "$private=ByGuid ([guid]'"+privateGuid+"'); if(@($connections|Where-Object {$m.INetSharingConfigurationForINetConnection($_).SharingEnabled}).Count){throw 'Existing ICS configuration must not be replaced'}; "+
+    public static string SnapshotScript(Guid privateGuid,Guid? publicGuid=null)=>Connections+
+        "$private=ByGuid ([guid]'"+privateGuid+"'); foreach($c in $connections){$cfg=$m.INetSharingConfigurationForINetConnection($c);if($cfg.SharingEnabled -and ([guid]$m.NetConnectionProps($c).Guid -ne [guid]'"+privateGuid+"' -or $cfg.SharingConnectionType -ne 1) -and ([guid]$m.NetConnectionProps($c).Guid -ne [guid]'"+(publicGuid??Guid.Empty)+"' -or $cfg.SharingConnectionType -ne 0)){throw 'Existing ICS configuration must not be replaced'}}; "+
         "$a=@(Get-NetAdapter -IncludeHidden|Where-Object {[guid]$_.InterfaceGuid -eq [guid]'"+privateGuid+"'}); "+
         "if($a.Count -ne 1 -or $a[0].Status -ne 'Up' -or $a[0].InterfaceDescription -notlike '*Wi-Fi Direct*'){throw 'Select the active Microsoft Wi-Fi Direct hotspot adapter'}; $i=$a[0].ifIndex; "+
         "[pscustomobject]@{PrivateIndex=$i;Dhcp=([string](Get-NetIPInterface -InterfaceIndex $i -AddressFamily IPv4).Dhcp -eq 'Enabled');"+
         "Addresses=@(Get-NetIPAddress -InterfaceIndex $i -AddressFamily IPv4|Where-Object {$_.IPAddress -notlike '169.254.*'}|Select-Object IPAddress,PrefixLength);"+
         "Dns=@((Get-DnsClientServerAddress -InterfaceIndex $i -AddressFamily IPv4).ServerAddresses)}|ConvertTo-Json -Depth 5 -Compress";
+    public static string FirewallScript(Plan p,SharingState s,bool enabled) {
+        s.Validate(p);
+        string[] names={p.Tag+"-Hotspot-TCP-Inbound",p.Tag+"-Hotspot-TCP-Outbound",p.Tag+"-Hotspot-UDP-Inbound",p.Tag+"-Hotspot-UDP-Outbound"};
+        if(!enabled)return "foreach($name in @("+string.Join(",",names.Select(n=>"'"+n+"'"))+")){Get-NetFirewallRule -Name $name -PolicyStore ActiveStore -ErrorAction SilentlyContinue|Remove-NetFirewallRule -ErrorAction Stop};";
+        string script="$ap=@(Get-NetAdapter -IncludeHidden|Where-Object {[guid]$_.InterfaceGuid -eq [guid]'"+s.PrivateGuid+"'});if($ap.Count -ne 1){throw 'Owned hotspot adapter missing'};";
+        foreach(string protocol in new[]{"TCP","UDP"})foreach(string direction in new[]{"Inbound","Outbound"}) {
+            string name=p.Tag+"-Hotspot-"+protocol+"-"+direction;
+            script+="if(!@(Get-NetFirewallRule -Name '"+name+"' -PolicyStore ActiveStore -ErrorAction SilentlyContinue).Count){New-NetFirewallRule -Name '"+name+"' -DisplayName 'TetherMax hotspot "+protocol+"' -Group 'TetherMax Hotspot Session' -PolicyStore ActiveStore -Direction "+direction+" -Action Allow -Profile Any -InterfaceAlias $ap[0].Name -RemoteAddress '192.168.137.0/24' -Protocol "+protocol+" -LocalPort "+(protocol=="TCP"?"80,443":"53,67,68")+"|Out-Null};";
+        }
+        return script;
+    }
     public static string StartScript(Plan p,SharingState s)
     {
         s.Validate(p);
         return Connections+"$public=ByGuid ([guid]'"+p.AdapterGuid+"');$private=ByGuid ([guid]'"+s.PrivateGuid+"'); "+
-            "if(@($connections|Where-Object {$m.INetSharingConfigurationForINetConnection($_).SharingEnabled}).Count){throw 'ICS ownership conflict'}; "+
-            "$m.INetSharingConfigurationForINetConnection($public).EnableSharing(0);$m.INetSharingConfigurationForINetConnection($private).EnableSharing(1); "+
+            "foreach($c in $connections){$cfg=$m.INetSharingConfigurationForINetConnection($c);if($cfg.SharingEnabled -and ([guid]$m.NetConnectionProps($c).Guid -ne [guid]'"+s.PrivateGuid+"' -or $cfg.SharingConnectionType -ne 1) -and ([guid]$m.NetConnectionProps($c).Guid -ne [guid]'"+p.AdapterGuid+"' -or $cfg.SharingConnectionType -ne 0)){throw 'ICS ownership conflict'}}; "+
+            "$privateConfig=$m.INetSharingConfigurationForINetConnection($private);$publicConfig=$m.INetSharingConfigurationForINetConnection($public);if(!$publicConfig.SharingEnabled){if($privateConfig.SharingEnabled){$privateConfig.DisableSharing()};$publicConfig.EnableSharing(0)};if(!$privateConfig.SharingEnabled){$privateConfig.EnableSharing(1)}; "+
             "if(!$m.INetSharingConfigurationForINetConnection($public).SharingEnabled -or $m.INetSharingConfigurationForINetConnection($public).SharingConnectionType -ne 0 -or !$m.INetSharingConfigurationForINetConnection($private).SharingEnabled -or $m.INetSharingConfigurationForINetConnection($private).SharingConnectionType -ne 1){throw 'ICS activation not acknowledged'}";
     }
     public static string StopScript(Plan p,SharingState s)
@@ -63,22 +75,25 @@ public static class OwnedSharing
             restore+"Set-NetIPInterface -InterfaceIndex $i -AddressFamily IPv4 -Dhcp "+(s.Dhcp?"Enabled":"Disabled")+"; "+
             (s.Dns.Length==0?"Set-DnsClientServerAddress -InterfaceIndex $i -ResetServerAddresses":"Set-DnsClientServerAddress -InterfaceIndex $i -ServerAddresses @("+string.Join(",",s.Dns.Select(d=>"'"+d+"'"))+")")+"; }";
     }
-    public static void Start(Journal journal,Plan p,Guid privateGuid,NativeBackend backend)
+    public static void ValidateSource(JsonElement health,Plan p) {p.Validate();if(!TunnelHealth.Healthy(health,p.AdapterGuid))throw new IOException("Verified TetherMax Wintun HTTPS/DNS traffic required before sharing");}
+    public static void Start(Journal journal,Plan p,Guid privateGuid,NativeBackend backend,bool nativeManaged=false)
     {
         if(journal.Completed||!ProcessIdentity.Alive(p.GuardianPid,p.GuardianStart)||!ProcessIdentity.Alive(p.WorkerPid,p.WorkerStart))throw new IOException("No active TetherMax session");
+        using(var health=JsonDocument.Parse(journal.ReadPublished("windows-connectivity.json")))ValidateSource(health.RootElement,p);
         SharingState? s=Read(journal,p);
+        if(s!=null&&s.NativeManaged!=nativeManaged)throw new IOException("Reconnect before changing hotspot providers");
         if(s!=null&&s.PrivateGuid!=privateGuid)throw new IOException("Reconnect before selecting another hotspot interface");
-        if(s!=null&&!File.Exists(journal.PathFor("sharing-disabled")))throw new IOException("Sharing already requested; stop it first");
-        if(s!=null){using var fresh=JsonDocument.Parse(NativeBackend.PowerShell(SnapshotScript(privateGuid)));if(fresh.RootElement.GetProperty("PrivateIndex").GetUInt32()!=s.PrivateIndex||Wfp.Luid(privateGuid)!=s.PrivateLuid)throw new IOException("Hotspot identity changed; reconnect TetherMax before sharing");}
+
+        if(s!=null){using var fresh=JsonDocument.Parse(NativeBackend.PowerShell(SnapshotScript(privateGuid,p.AdapterGuid)));if(fresh.RootElement.GetProperty("PrivateIndex").GetUInt32()!=s.PrivateIndex||Wfp.Luid(privateGuid)!=s.PrivateLuid)throw new IOException("Hotspot identity changed; reconnect TetherMax before sharing");}
         if(s==null){
-            using var snapshot=JsonDocument.Parse(NativeBackend.PowerShell(SnapshotScript(privateGuid)));var r=snapshot.RootElement;
+            using var snapshot=JsonDocument.Parse(NativeBackend.PowerShell(SnapshotScript(privateGuid,p.AdapterGuid)));var r=snapshot.RootElement;
             s=new(privateGuid,r.GetProperty("PrivateIndex").GetUInt32(),Wfp.Luid(privateGuid),Guid.NewGuid(),Guid.NewGuid(),r.GetProperty("Dhcp").GetBoolean(),
-                JsonSerializer.Deserialize<SharingAddress[]>(r.GetProperty("Addresses"))!,JsonSerializer.Deserialize<string[]>(r.GetProperty("Dns"))!);
+                JsonSerializer.Deserialize<SharingAddress[]>(r.GetProperty("Addresses"))!,JsonSerializer.Deserialize<string[]>(r.GetProperty("Dns"))!){NativeManaged=nativeManaged};
             s.Validate(p);journal.WriteNew("sharing.json",JsonSerializer.Serialize(s));
         }
         File.Delete(journal.PathFor("sharing-disabled"));
         using var wfp=new Wfp();wfp.Sharing(p,s,true);
-        try{backend.SharingCommands(StartScript(p,s),true);}
+        try{backend.SharingCommands((nativeManaged?"":StartScript(p,s)+";")+FirewallScript(p,s,true),true);}
         catch{Stop(journal,p,backend);throw;}
         journal.WriteNew("sharing-start-"+Guid.NewGuid().ToString("N")+".json",JsonSerializer.Serialize(new{observedAt=DateTimeOffset.UtcNow,publicGuid=p.AdapterGuid,privateGuid,scope="ICS configured; TV runtime acceptance required"}));
     }
@@ -87,15 +102,20 @@ public static class OwnedSharing
         using var lease=journal.Lock();
         var s=Read(journal,p);
         if(s==null||File.Exists(journal.PathFor("sharing-disabled")))return new{type="sharing-state",configured=false};
-        NativeBackend.PowerShell(Connections+"$public=ByGuid ([guid]'"+p.AdapterGuid+"');$private=ByGuid ([guid]'"+s.PrivateGuid+"');"+
+        if(s.NativeManaged)NativeMobileHotspot.Observe(journal,p);
+        else NativeBackend.PowerShell(Connections+"$public=ByGuid ([guid]'"+p.AdapterGuid+"');$private=ByGuid ([guid]'"+s.PrivateGuid+"');"+
             "if(!$m.INetSharingConfigurationForINetConnection($public).SharingEnabled -or $m.INetSharingConfigurationForINetConnection($public).SharingConnectionType -ne 0 -or !$m.INetSharingConfigurationForINetConnection($private).SharingEnabled -or $m.INetSharingConfigurationForINetConnection($private).SharingConnectionType -ne 1){throw 'ICS source or private interface changed'}");
         using var wfp=new Wfp();if(!wfp.Exists(s.ForwardV4)||!wfp.Exists(s.ForwardV6))throw new IOException("TV forwarding guard missing");
-        return new{type="sharing-state",configured=true,publicGuid=p.AdapterGuid,privateGuid=s.PrivateGuid,scope="ICS and forwarding guard observed; TV internet not certified"};
+        object[] clients=Array.Empty<object>();string? clientsError=null;if(s.NativeManaged)try{clients=NativeMobileHotspot.Clients(journal,p,s.PrivateIndex);}catch(Exception e){clientsError=e.Message;}
+        return new{type="sharing-state",clients,clientsError,configured=true,publicGuid=p.AdapterGuid,privateGuid=s.PrivateGuid,scope="ICS and forwarding guard observed; TV internet not certified"};
     }
     public static void Stop(Journal journal,Plan p,NativeBackend backend)
     {
-        var s=Read(journal,p);if(s==null||File.Exists(journal.PathFor("sharing-disabled")))return;
-        backend.SharingCommands(StopScript(p,s),false);
+        if(File.Exists(journal.PathFor("sharing-disabled")))return;
+        var s=Read(journal,p);
+        NativeMobileHotspot.Stop(journal,p);
+        if(s==null)return;
+        backend.SharingCommands((s.NativeManaged?"":StopScript(p,s)+";")+FirewallScript(p,s,false),false);
         using var wfp=new Wfp();wfp.Sharing(p,s,false);
         journal.WriteNew("sharing-disabled","ICS disabled before tunnel recovery");
     }

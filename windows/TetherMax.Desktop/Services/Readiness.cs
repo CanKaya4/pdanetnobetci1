@@ -3,14 +3,7 @@ using System.Net;
 using System.Net.NetworkInformation;
 namespace TetherMax;
 internal static class Readiness {
- public static bool Healthy(System.Text.Json.JsonElement result) {
-  if(!result.TryGetProperty("checks",out var checks)||checks.ValueKind!=System.Text.Json.JsonValueKind.Array||checks.GetArrayLength()!=3)return false;
-  var required=new HashSet<string>{"windows-https-no-proxy","windows-system-dns","windows-direct-udp-dns"};
-  foreach(var check in checks.EnumerateArray()) {
-   if(!check.TryGetProperty("name",out var name)||name.ValueKind!=System.Text.Json.JsonValueKind.String||!required.Remove(name.GetString()!)||!check.TryGetProperty("passed",out var passed)||passed.ValueKind!=System.Text.Json.JsonValueKind.True)return false;
-  }
-  return required.Count==0;
- }
+ public static bool Healthy(System.Text.Json.JsonElement result)=>TunnelHealth.Healthy(result);
 
  public static double BackoffSeconds(int attempt)=>Math.Min(60,Math.Pow(2,Math.Min(attempt,5))*2)+Random.Shared.NextDouble()*2;
  public static async Task WaitFor(Func<Task<bool>> ready,CancellationToken cancel) {

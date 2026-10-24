@@ -15,6 +15,7 @@ import (
 )
 
 type RemoteStatus struct {
+	DNSProfile string       `json:"dnsProfile"`
 	Mode       traffic.Mode `json:"mode"`
 	Revision   uint64       `json:"revision"`
 	Uploaded   uint64       `json:"uploaded"`
@@ -71,6 +72,26 @@ func (c *Control) SetMode(mode traffic.Mode) error {
 	_, err := io.ReadFull(c, status[:])
 	if err == nil && status[0] != 0 {
 		return errors.New("phone rejected mode")
+	}
+	return err
+}
+func (c *Control) SetDNS(profile string) error {
+	if err := (traffic.Settings{Mode: traffic.Auto, DNSProfile: profile}).Validate(); err != nil {
+		return err
+	}
+	if profile == "" {
+		profile = "system"
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.SetDeadline(time.Now().Add(2 * time.Second))
+	if _, err := c.Write(append([]byte{4, byte(len(profile))}, []byte(profile)...)); err != nil {
+		return err
+	}
+	var result [1]byte
+	_, err := io.ReadFull(c, result[:])
+	if err == nil && result[0] != 0 {
+		return errors.New("phone rejected DNS profile")
 	}
 	return err
 }
