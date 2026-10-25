@@ -41,8 +41,8 @@ func TestModePolicyManualAndAutomatic(t *testing.T) {
 	}
 	f.Close()
 }
-func TestSettingsRejectUncalibratedOrInvalidAdaptiveRates(t *testing.T) {
-	for _, s := range []Settings{{Mode: "invalid"}, {Mode: Gaming, Adaptive: true}, {Mode: Daily, UploadMbps: math.NaN()}, {Mode: Daily, DownloadMbps: -1}} {
+func TestSettingsRejectInvalidRates(t *testing.T) {
+	for _, s := range []Settings{{Mode: "invalid"},  {Mode: Daily, UploadMbps: math.NaN()}, {Mode: Daily, DownloadMbps: -1}} {
 		if _, err := New(s); err == nil {
 			t.Fatal("invalid settings accepted", s)
 		}
@@ -225,7 +225,7 @@ func TestStaleSuccessAndNetworkResetDoNotInventLiveDelay(t *testing.T) {
 	}
 	m.ResetMeasurements()
 	s := m.Snapshot()
-	if s.ProbeSamples != 0 || s.QueryRTTMs != nil || s.JitterMs != nil || s.UploadCeilingMbps != 9 {
+	if s.ProbeSamples != 0 || s.QueryRTTMs != nil || s.JitterMs != nil || s.UploadCeilingMbps != 10 {
 		t.Fatal(s)
 	}
 }

@@ -11,12 +11,12 @@ import (
 )
 
 func TestPrivateTrafficSettingsAndSharedClassifierValidation(t *testing.T) {
-	for _, record := range []string{`{"mode":"gaming","uploadMbps":10,"downloadMbps":50,"adaptive":true}`, `{"mode":"auto"}`} {
+	for _, record := range []string{`{"mode":"gaming","uploadMbps":10,"downloadMbps":50,"adaptive":true}`, `{"mode":"auto"}`, `{"mode":"gaming","uploadMbps":0,"adaptive":true}`} {
 		if _, err := decodeTrafficSettings([]byte(record)); err != nil {
 			t.Fatal(err)
 		}
 	}
-	for _, record := range []string{`{"mode":"gaming","uploadMbps":0,"adaptive":true}`, `{"mode":"daily","extra":1}`, `{"mode":"daily"}{"mode":"gaming"}`} {
+	for _, record := range []string{`{"mode":"gaming","uploadMbps":-1,"adaptive":true}`, `{"mode":"daily","extra":1}`, `{"mode":"daily"}{"mode":"gaming"}`} {
 		if _, err := decodeTrafficSettings([]byte(record)); err == nil {
 			t.Fatal("invalid private record accepted", record)
 		}

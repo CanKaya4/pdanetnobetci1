@@ -87,6 +87,8 @@ func (c idleConn) CloseWrite() error {
 }
 
 type Engine struct {
+	upQueue, downQueue                *traffic.PacketQueue
+	packetPumps                       sync.WaitGroup
 	cfg                               Config
 	ctx                               context.Context
 	cancel                            context.CancelFunc
@@ -140,6 +142,35 @@ func New(cfg Config) (*Engine, error) {
 		return nil, err
 	}
 	e.stack = s
+	if cfg.Traffic != nil {
+		e.upQueue = cfg.Traffic.PacketQueue(false)
+		e.downQueue = cfg.Traffic.PacketQueue(true)
+		e.packetPumps.Add(2)
+		go func() {
+			defer e.packetPumps.Done()
+			for {
+				p, err := e.upQueue.Read(e.ctx)
+				if err != nil {
+					return
+				}
+				if e.inject(p) != nil {
+					return
+				}
+			}
+		}()
+		go func() {
+			defer e.packetPumps.Done()
+			for {
+				p, err := e.readPacket(e.ctx)
+				if err != nil {
+					return
+				}
+				if !e.downQueue.Enqueue(p) && e.ctx.Err() != nil {
+					return
+				}
+			}
+		}()
+	}
 	return e, nil
 }
 
@@ -177,6 +208,16 @@ func (e *Engine) Inject(packet []byte) error {
 		e.rejected.Add(1)
 		return err
 	}
+	if e.upQueue != nil {
+		if e.ctx.Err() != nil {
+			return net.ErrClosed
+		}
+		e.upQueue.Enqueue(packet)
+		return nil
+	}
+	return e.inject(packet)
+}
+func (e *Engine) inject(packet []byte) error {
 	e.ingress.RLock()
 	defer e.ingress.RUnlock()
 	e.mu.Lock()
@@ -194,6 +235,12 @@ func (e *Engine) Inject(packet []byte) error {
 // ReadPacket returns an IP packet for the same TUN interface which supplied ingress.
 // The returned buffer is owned by the caller. Cancellation never sends fallback traffic.
 func (e *Engine) ReadPacket(ctx context.Context) ([]byte, error) {
+	if e.downQueue != nil {
+		return e.downQueue.Read(ctx)
+	}
+	return e.readPacket(ctx)
+}
+func (e *Engine) readPacket(ctx context.Context) ([]byte, error) {
 	p := e.link.ReadContext(ctx)
 	if p == nil {
 		return nil, io.EOF
@@ -279,8 +326,8 @@ func (e *Engine) HandleTCP(c adapter.TCPConn) {
 		var upload io.Writer = remote
 		var download io.Writer = local
 		if f.schedule != nil {
-			upload = traffic.Writer{Flow: f.schedule, Writer: remote}
-			download = traffic.Writer{Flow: f.schedule, Down: true, Writer: local}
+			upload = traffic.Writer{Flow: f.schedule, Writer: remote, Unpaced: e.upQueue != nil}
+			download = traffic.Writer{Flow: f.schedule, Down: true, Writer: local, Unpaced: e.downQueue != nil}
 		}
 		done := make(chan struct{})
 		go func() {
@@ -336,7 +383,7 @@ func (e *Engine) HandleUDP(c adapter.UDPConn) {
 					return
 				}
 				refresh()
-				if f.schedule != nil {
+				if f.schedule != nil && e.upQueue == nil {
 					if err := f.schedule.Datagram(false, n); err != nil {
 						return
 					}
@@ -367,7 +414,7 @@ func (e *Engine) HandleUDP(c adapter.UDPConn) {
 				break
 			}
 			refresh()
-			if f.schedule != nil {
+			if f.schedule != nil && e.downQueue == nil {
 				if err := f.schedule.Datagram(true, n); err != nil {
 					break
 				}
@@ -415,6 +462,10 @@ func (e *Engine) Close() error {
 	}
 	e.closed = true
 	e.cancel()
+	if e.upQueue != nil {
+		e.upQueue.Close()
+		e.downQueue.Close()
+	}
 	connections := make([]net.Conn, 0, len(e.live)*2)
 	for f := range e.live {
 		connections = append(connections, f.local)
@@ -433,6 +484,7 @@ func (e *Engine) Close() error {
 	e.link.Close()
 	e.ingress.Unlock()
 	e.wg.Wait()
+	e.packetPumps.Wait()
 	return nil
 }
 func (e *Engine) String() string {

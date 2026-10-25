@@ -87,7 +87,7 @@ public static class Program
         var request=JsonSerializer.Deserialize<Request>(line)??throw new IOException("Invalid private request");line="";
         if(!Regex.IsMatch(request.Transport,"^127\\.0\\.0\\.1:[0-9]{1,5}$")||!Regex.IsMatch(request.Token,"^[a-f0-9]{32}$")||request.MaxSeconds<0||request.MaxSeconds>300||request.MaxPayloadBytes<0||request.MaxPayloadBytes>10*1024*1024||(request.MaxSeconds>0&&request.MaxPayloadBytes==0))
             throw new IOException("Invalid private transport or bounded test duration");
-        if(!new[]{"auto","gaming","streaming","daily","maximum"}.Contains(request.Profile)||!double.IsFinite(request.UploadMbps)||!double.IsFinite(request.DownloadMbps)||request.UploadMbps<0||request.UploadMbps>10000||request.DownloadMbps<0||request.DownloadMbps>10000||(request.Adaptive&&request.UploadMbps==0))throw new IOException("Invalid traffic profile");
+        if(!new[]{"auto","gaming","streaming","daily","maximum"}.Contains(request.Profile)||!double.IsFinite(request.UploadMbps)||!double.IsFinite(request.DownloadMbps)||request.UploadMbps<0||request.UploadMbps>10000||request.DownloadMbps<0||request.DownloadMbps>10000)throw new IOException("Invalid traffic profile");
         new LiveTrafficSettings(request.Profile,request.UploadMbps,request.DownloadMbps,request.Adaptive,request.DnsProfile).Validate();
         // The controller mutex is held; recover old intents before activation.
         try{RecoverStale();}

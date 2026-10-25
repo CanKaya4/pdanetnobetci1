@@ -1,6 +1,6 @@
 // Package traffic provides experimental per-flow byte scheduling and pacing.
 // It changes only TetherMax socket delivery, never the OS network configuration.
-// This is not CoDel or CAKE and cannot control the mobile base station's queue.
+// Packet queues use CoDel; the mobile base station queue remains outside our control.
 package traffic
 
 import (
@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -55,13 +56,15 @@ func (s Settings) Validate() error {
 			return errors.New("rate ceiling must be 0..10000 Mbps")
 		}
 	}
-	if s.Adaptive && s.UploadMbps == 0 {
-		return errors.New("adaptive pacing requires an explicit upload ceiling")
-	}
+
 	return nil
 }
 
 type Snapshot struct {
+	AQM                                    string `json:"aqm"`
+	VisibleHosts                           int
+	CoDelDrops, OverlimitDrops             uint64
+	PacketPending                          int64
 	Type                                   string   `json:"type"`
 	Requested                              Mode     `json:"requested"`
 	Active                                 Mode     `json:"active"`
@@ -77,32 +80,37 @@ type Snapshot struct {
 	Served, Rejected                       uint64
 }
 type observation struct {
-	at  time.Time
-	rtt time.Duration
-	ok  bool
+	at               time.Time
+	rtt              time.Duration
+	ok               bool
+	upMbps, downMbps float64
 }
 type Manager struct {
-	mu                   sync.Mutex
-	settings             Settings
-	games                []string
-	shared               int
-	upRate, downRate     float64
-	observations         []observation
-	lastRTT, jitter      float64
-	lastSuccess          time.Time
-	high, low            int
-	lastAdjustment       time.Time
-	sampleAt             time.Time
-	sampleUp, sampleDown uint64
-	up, down             *scheduler
-	next                 uint64
-	active               int
-	upBytes, downBytes   uint64
-	lastUp, lastDown     uint64
-	lastSnapshot         time.Time
-	waits                [512]float64
-	waitCount            int
-	served, rejected     uint64
+	visibleHosts               map[uint32]struct{}
+	packetQueues               []*PacketQueue
+	packetPending              atomic.Int64
+	codelDrops, overlimitDrops atomic.Uint64
+	mu                         sync.Mutex
+	settings                   Settings
+	games                      []string
+	shared                     int
+	upRate, downRate           float64
+	observations               []observation
+	lastRTT, jitter            float64
+	lastSuccess                time.Time
+	high, low                  int
+	lastAdjustment             time.Time
+	sampleAt                   time.Time
+	sampleUp, sampleDown       uint64
+	up, down                   *scheduler
+	next                       uint64
+	active                     int
+	upBytes, downBytes         uint64
+	lastUp, lastDown           uint64
+	lastSnapshot               time.Time
+	waits                      [512]float64
+	waitCount                  int
+	served, rejected           uint64
 }
 
 func New(s Settings) (*Manager, error) {
@@ -118,10 +126,6 @@ func New(s Settings) (*Manager, error) {
 func (m *Manager) resetRates() {
 	m.upRate = m.settings.UploadMbps
 	m.downRate = m.settings.DownloadMbps
-	if m.settings.Adaptive {
-		m.upRate *= 0.9
-		m.downRate *= 0.9
-	}
 	m.high = 0
 	m.low = 0
 	m.lastAdjustment = time.Time{}
@@ -139,6 +143,7 @@ func (m *Manager) Configure(s Settings) error {
 	m.mu.Unlock()
 	m.up.wake()
 	m.down.wake()
+	m.wakePackets()
 	return nil
 }
 func (m *Manager) SetGames(names []string) {
@@ -245,22 +250,25 @@ func (m *Manager) Observe(now time.Time, rtt time.Duration, ok bool) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	seconds := now.Sub(m.sampleAt).Seconds()
-	load := 0.0
+	upMbps, downMbps := 0.0, 0.0
 	if seconds > 0 {
-		if m.upRate > 0 {
-			load = float64(m.upBytes-m.sampleUp) * 8 / 1e6 / seconds / m.upRate
-		}
-		if m.downRate > 0 {
-			load = math.Max(load, float64(m.downBytes-m.sampleDown)*8/1e6/seconds/m.downRate)
-		}
+		upMbps = float64(m.upBytes-m.sampleUp) * 8 / 1e6 / seconds
+		downMbps = float64(m.downBytes-m.sampleDown) * 8 / 1e6 / seconds
 	}
+	loaded := func(measured, rate float64) bool {
+		if rate == 0 {
+			return measured >= 1
+		}
+		return measured >= rate*.6
+	}
+	upLoaded, downLoaded := loaded(upMbps, m.upRate), loaded(downMbps, m.downRate)
 	m.sampleAt = now
 	m.sampleUp = m.upBytes
 	m.sampleDown = m.downBytes
 	if ok && (rtt <= 0 || rtt > 30*time.Second) {
 		return
 	}
-	m.observations = append(m.observations, observation{now, rtt, ok})
+	m.observations = append(m.observations, observation{now, rtt, ok, upMbps, downMbps})
 	cut := now.Add(-120 * time.Second)
 	i := 0
 	for i < len(m.observations) && m.observations[i].at.Before(cut) {
@@ -281,20 +289,23 @@ func (m *Manager) Observe(now time.Time, rtt time.Duration, ok bool) {
 	if !m.settings.Adaptive || m.activeMode() == Maximum || !ok {
 		return
 	}
-	base := rtt
-	valid := 0
+	baseline := []time.Duration{}
 	for _, o := range m.observations {
 		if o.ok {
-			valid++
-			if o.rtt < base {
-				base = o.rtt
-			}
+			baseline = append(baseline, o.rtt)
 		}
 	}
+	valid := len(baseline)
+	sort.Slice(baseline, func(i, j int) bool { return baseline[i] < baseline[j] })
+	base := rtt
+	if valid > 0 {
+		base = baseline[(valid-1)/5]
+	}
+	target := max(20*time.Millisecond, base/4)
 	if valid < 5 {
 		return
 	}
-	if rtt > base+20*time.Millisecond && load >= 0.6 {
+	if rtt > base+target && (upLoaded || downLoaded) {
 		m.high++
 		m.low = 0
 	} else if rtt < base+10*time.Millisecond {
@@ -307,21 +318,71 @@ func (m *Manager) Observe(now time.Time, rtt time.Duration, ok bool) {
 	if now.Sub(m.lastAdjustment) < 2*time.Second {
 		return
 	}
+	// Rate estimates come from actual bytes, not advertised 5G signal strength.
+	// A zero user ceiling starts unlimited; congestion discovers a working rate.
 	if m.high >= 3 {
-		m.upRate = math.Max(m.settings.UploadMbps*0.1, m.upRate*0.85)
-		if m.downRate > 0 {
-			m.downRate = math.Max(m.settings.DownloadMbps*0.1, m.downRate*0.9)
+		reduce := func(current, ceiling, measured float64, down bool) float64 {
+			if current == 0 {
+				// Learn from a recent window rather than one quiet transfer interval.
+				rates := []float64{measured}
+				for _, o := range m.observations {
+					if now.Sub(o.at) <= 10*time.Second {
+						v := o.upMbps
+						if down {
+							v = o.downMbps
+						}
+						if v >= 1 {
+							rates = append(rates, v)
+						}
+					}
+				}
+				sort.Float64s(rates)
+				current = rates[(len(rates)-1)*4/5]
+			}
+			next := math.Min(10000, math.Max(.1, current*.85))
+			if ceiling > 0 {
+				next = math.Min(ceiling, next)
+			}
+			return next
+		}
+		if upLoaded {
+			m.upRate = reduce(m.upRate, m.settings.UploadMbps, upMbps, false)
+		}
+		if downLoaded {
+			m.downRate = reduce(m.downRate, m.settings.DownloadMbps, downMbps, true)
 		}
 		m.high = 0
 		m.lastAdjustment = now
+		// Wake blocked packet reads as soon as capacity changes.
+		for _, q := range m.packetQueues {
+			q.notify()
+		}
 	} else if m.low >= 10 {
-		m.upRate = math.Min(m.settings.UploadMbps, m.upRate+m.settings.UploadMbps*0.02)
-		if m.downRate > 0 {
-			m.downRate = math.Min(m.settings.DownloadMbps, m.downRate+m.settings.DownloadMbps*0.02)
+		increase := func(current, ceiling float64) float64 {
+			if current == 0 {
+				return ceiling
+			}
+			next := current*1.08 + .1
+			if ceiling > 0 {
+				next = math.Min(ceiling, next)
+			}
+			return next
+		}
+		// Quiet recovery discards learned limits, but preserves explicit user caps.
+		if upMbps < .05 && downMbps < .05 {
+			m.upRate = m.settings.UploadMbps
+			m.downRate = m.settings.DownloadMbps
+		} else {
+			m.upRate = increase(m.upRate, m.settings.UploadMbps)
+			m.downRate = increase(m.downRate, m.settings.DownloadMbps)
 		}
 		m.low = 0
 		m.lastAdjustment = now
+		for _, q := range m.packetQueues {
+			q.notify()
+		}
 	}
+
 }
 func (m *Manager) Snapshot() Snapshot {
 	m.mu.Lock()
@@ -336,7 +397,10 @@ func (m *Manager) Snapshot() Snapshot {
 	m.lastUp = m.upBytes
 	m.lastDown = m.downBytes
 	m.lastSnapshot = now
-	s := Snapshot{Type: "traffic", Requested: m.settings.Mode, Active: m.activeMode(), Settings: m.settings, Games: append([]string{}, m.games...), Uploaded: m.upBytes, Downloaded: m.downBytes, UploadMbps: up, DownloadMbps: down, UploadCeilingMbps: m.upRate, DownloadCeilingMbps: m.downRate, ActiveFlows: m.active, Pending: int(m.up.pending.Load() + m.down.pending.Load()), Served: m.served, Rejected: m.rejected}
+	s := Snapshot{AQM: "socket-pacing", VisibleHosts: len(m.visibleHosts), CoDelDrops: m.codelDrops.Load(), OverlimitDrops: m.overlimitDrops.Load(), PacketPending: m.packetPending.Load(), Type: "traffic", Requested: m.settings.Mode, Active: m.activeMode(), Settings: m.settings, Games: append([]string{}, m.games...), Uploaded: m.upBytes, Downloaded: m.downBytes, UploadMbps: up, DownloadMbps: down, UploadCeilingMbps: m.upRate, DownloadCeilingMbps: m.downRate, ActiveFlows: m.active, Pending: int(m.up.pending.Load() + m.down.pending.Load()), Served: m.served, Rejected: m.rejected}
+	if len(m.packetQueues) > 0 {
+		s.AQM = "host-fair CoDel IPv4"
+	}
 	if s.Active == Maximum {
 		s.UploadCeilingMbps = m.settings.UploadMbps
 		s.DownloadCeilingMbps = m.settings.DownloadMbps
@@ -374,7 +438,16 @@ func (m *Manager) Snapshot() Snapshot {
 	}
 	return s
 }
-func (m *Manager) Close()             { m.up.close(); m.down.close() }
+func (m *Manager) Close() {
+	m.up.close()
+	m.down.close()
+	m.mu.Lock()
+	queues := append([]*PacketQueue(nil), m.packetQueues...)
+	m.mu.Unlock()
+	for _, q := range queues {
+		q.Close()
+	}
+}
 func (m *Manager) Settings() Settings { m.mu.Lock(); defer m.mu.Unlock(); return m.settings }
 
 func (m *Manager) ResetMeasurements() {
@@ -385,4 +458,23 @@ func (m *Manager) ResetMeasurements() {
 	m.jitter = 0
 	m.lastSuccess = time.Time{}
 	m.resetRates()
+}
+
+func (m *Manager) wakePackets() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, q := range m.packetQueues {
+		q.notify()
+	}
+}
+
+func (m *Manager) visibleHost(host uint32) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.visibleHosts == nil {
+		m.visibleHosts = map[uint32]struct{}{}
+	}
+	if len(m.visibleHosts) < 1024 {
+		m.visibleHosts[host] = struct{}{}
+	}
 }

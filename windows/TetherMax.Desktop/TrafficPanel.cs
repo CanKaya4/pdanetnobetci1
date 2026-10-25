@@ -45,7 +45,7 @@ internal sealed class TrafficPanel : Border
         mode.ItemsSource=Modes;mode.SelectedIndex=0;
         Field("Profil",mode);Field("DNS",dns);Field("Yükleme tavanı · Mbps",upload);Field("İndirme tavanı · Mbps",download);
         row.Children.Add(adaptive);var apply=new Button{Content="Uygula",Padding=new Thickness(14,8,14,8),Margin=new Thickness(0,0,0,8)};row.Children.Add(apply);
-        panel.Children.Add(new TextBlock{Text="0 = tavan yok. Bufferbloat kontrolü için ölçtüğünüz hızların yaklaşık %90’ını girip Adaptif’i açın. Hücresel ölçümler mobil veri kullanır. Seçim yalnızca TetherMax'ten geçen trafiği etkiler.",Foreground=UiTheme.Muted,TextWrapping=TextWrapping.Wrap,FontSize=12});
+        panel.Children.Add(new TextBlock{Text="0 = sabit tavan yok. Adaptif açıkken yük ve gecikme ölçümleriyle hız ayarlanır; boşta öğrenilen sınır kaldırılır. İsterseniz üst tavan girebilirsiniz. Ölçümler mobil veri kullanır.",Foreground=UiTheme.Muted,TextWrapping=TextWrapping.Wrap,FontSize=12});
         var range=new ComboBox{ItemsSource=new[]{"1 dakika","5 dakika","30 dakika"},SelectedIndex=0,Width=150,HorizontalAlignment=HorizontalAlignment.Left,Margin=new Thickness(0,12,0,8)};
         range.SelectionChanged+=(_,_)=>{historyMinutes=new[]{1,5,30}[range.SelectedIndex];Draw(speed,Recent(rates));Draw(delay,Recent(delays));};panel.Children.Add(range);
         panel.Children.Add(status);panel.Children.Add(metrics);panel.Children.Add(speed);
@@ -59,7 +59,6 @@ internal sealed class TrafficPanel : Border
         if(applying)return;
         bool Parse(TextBox box,out double value)=>double.TryParse(box.Text,NumberStyles.Float,CultureInfo.CurrentCulture,out value)||double.TryParse(box.Text,NumberStyles.Float,CultureInfo.InvariantCulture,out value);
         if(!Parse(upload,out double up)||!Parse(download,out double down)||!double.IsFinite(up)||!double.IsFinite(down)||up<0||down<0||up>10000||down>10000){Status("Tavanlar 0–10000 Mbps arasında olmalı.");return;}
-        if(adaptive.IsChecked==true&&up==0){Status("Adaptif kontrol için ölçtüğünüz yükleme hızının yaklaşık %90’ını tavan olarak girin.");return;}
         if(mode.SelectedItem is not ModeChoice choice)return;
         var next=new TrafficSettings(choice.Id,up,down,adaptive.IsChecked==true,DnsIds[Math.Max(0,dns.SelectedIndex)]);
         applying=true;mode.IsEnabled=dns.IsEnabled=upload.IsEnabled=download.IsEnabled=adaptive.IsEnabled=false;Status("Ayarlar uygulanıyor…");
