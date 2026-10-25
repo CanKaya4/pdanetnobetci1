@@ -17,7 +17,9 @@ public final class TunnelService extends Service {
     private String stage = "foreground";
     private synchronized void available(Network network) {
         if (stopping || !lifecycle.acceptsNetwork() || instance != this) return;
+        boolean changed=!network.equals(cellular);
         cellular = network;
+        if(changed)powerHandler.post(()->{if(!stopping&&health!=null)health.registerSignal();});
         if (running()) status = "Hücresel bağlantı hazır; USB istemcisi bekleniyor";
         LinkProperties properties=manager.getLinkProperties(network);
         networkInfo="CELLULAR · Network "+network+" · "+(properties==null?"Arayüz bilgisi yok":properties.getInterfaceName());
@@ -57,6 +59,28 @@ public final class TunnelService extends Service {
     private volatile LocalServerSocket listener;
     private UsbPairing pairing;
     private volatile boolean stopping;
+    private PowerManager.WakeLock transferWake;
+    private volatile ModemHealth health;
+    ModemHealth health(){return health;}
+    static boolean reducedWork(){TunnelService s=instance;ModemHealth h=s==null?null:s.health;return h!=null&&h.reduced;}
+    void schedulePowerCheck(){powerHandler.removeCallbacks(maintainPower);if(!stopping)powerHandler.post(maintainPower);}
+    private long wakeRenewAt;
+    private volatile long usbAcceptedAt;
+    volatile String usbRecovery="Yeni USB bağlantılarına hazır";
+    private final java.util.concurrent.atomic.AtomicBoolean powerCheckQueued=new java.util.concurrent.atomic.AtomicBoolean();
+    private final Runnable powerNudge=()->{powerCheckQueued.set(false);schedulePowerCheck();};
+    private final Handler powerHandler=new Handler(Looper.getMainLooper());
+    private final Runnable maintainPower=new Runnable(){public void run(){
+        if(stopping)return;
+        Relay current=relay;
+        boolean connected=current!=null&&HostLease.fresh(System.nanoTime(),current.hostTelemetryNanos,stopping);
+        if(connected){if(transferWake==null){transferWake=getSystemService(PowerManager.class).newWakeLock(PowerManager.PARTIAL_WAKE_LOCK,"TetherMax:UsbTransfer");transferWake.setReferenceCounted(false);}long now=SystemClock.elapsedRealtime();if(!transferWake.isHeld()||now>=wakeRenewAt){transferWake.acquire(20000L);wakeRenewAt=now+10000;}}
+        else if(transferWake!=null&&transferWake.isHeld())transferWake.release();
+        ModemHealth currentHealth=health;if(currentHealth!=null)currentHealth.heartbeat(connected);
+        boolean recentAccept=SystemClock.elapsedRealtime()-usbAcceptedAt<30000;
+        powerHandler.postDelayed(this,GuardianPolicy.maintenanceDelay(connected||recentAccept,getSystemService(PowerManager.class).isInteractive()));
+    }};
+    public Network measurementNetwork(){return cellular;}
     private ConnectivityManager manager;
     private ConnectivityManager.NetworkCallback callback;
     @Override public synchronized void onCreate() {
@@ -66,6 +90,9 @@ public final class TunnelService extends Service {
         NotificationManager notifications = getSystemService(NotificationManager.class);
         notifications.createNotificationChannel(new NotificationChannel("engine", "USB aktarım", NotificationManager.IMPORTANCE_LOW));
         startForeground(1, new Notification.Builder(this, "engine").setContentTitle("TetherMax USB motoru").setContentText("Hücresel bağlantı bekleniyor").setSmallIcon(getResources().getIdentifier("tethermax_notification", "drawable", getPackageName())).build());
+        // Optional telemetry failure must never prevent the transfer engine starting.
+        health=new ModemHealth(this);
+        try { health.start(); } catch(RuntimeException unavailable) { health.close();health=null; }
         manager = getSystemService(ConnectivityManager.class);
         callback = new ConnectivityManager.NetworkCallback() {
             @Override public void onAvailable(Network network) {
@@ -123,15 +150,39 @@ public final class TunnelService extends Service {
             listener = new LocalServerSocket("io.tethermax.usb.v1");
             stage="pairing listener";
             pairing = new UsbPairing(this);
+            schedulePowerCheck();
             stage="accept worker";
             final LocalServerSocket ownedListener=listener;
             final Relay ownedRelay=relay;
             acceptor.execute(() -> {
+                LocalServerSocket activeListener=ownedListener;
+                int failures=0;
                 while (!stopping) {
+                    LocalSocket accepted;
                     try {
-                        LocalSocket socket = ownedListener.accept();
+                        if(activeListener==null) {
+                            synchronized(TunnelService.this) {
+                                if(stopping)return;
+                                activeListener=new LocalServerSocket("io.tethermax.usb.v1");listener=activeListener;usbRecovery="USB dinleyicisi yeniden hazır";
+                            }
+                        }
+                        accepted=activeListener.accept();failures=0;
+                    } catch(IOException | RuntimeException error) {
+                        if(stopping)return;
+                        if(activeListener!=null)try{activeListener.close();}catch(IOException ignored){}
+                        activeListener=null;
+                        long delay=GuardianPolicy.retryDelay(++failures);
+                        if(delay<0){usbRecovery="Yeni USB bağlantıları alınamıyor. Mevcut akışlar korunuyor; aktarım bitince motoru elle yeniden başlatın.";status=usbRecovery;return;}
+                        usbRecovery="USB dinleyicisi kurtarılıyor · deneme "+failures+"/6; mevcut akışlar korunuyor";status=usbRecovery;
+                        try{Thread.sleep(delay);}catch(InterruptedException stopped){Thread.currentThread().interrupt();return;}
+                        continue;
+                    }
+                    final LocalSocket socket=accepted;
+                    try {
+                        usbAcceptedAt=SystemClock.elapsedRealtime();
+                        if(powerCheckQueued.compareAndSet(false,true))powerHandler.postDelayed(powerNudge,1000);
                         try { socket.setSoTimeout(15000); }
-                        catch(IOException e) { socket.close(); throw e; }
+                        catch(IOException e) { socket.close(); continue; }
                         ownedRelay.accept(new Relay.Endpoint() {
                             public InputStream input() throws IOException { return socket.getInputStream(); }
                             public OutputStream output() throws IOException { return socket.getOutputStream(); }
@@ -139,16 +190,23 @@ public final class TunnelService extends Service {
                             public void shutdownOutput() throws IOException { socket.shutdownOutput(); }
                             public void close() throws IOException { socket.close(); }
                         });
-                    } catch (IOException | RuntimeException e) { fail("USB listener",e); break; }
+                    } catch (IOException | RuntimeException e) {
+                        // One rejected/failed client must not stop other streams or the listener.
+                        try{socket.close();}catch(IOException ignored){}
+                    }
                 }
             });
             synchronized(this) { if(!stopping && lifecycle.ready()) {status=cellular==null?"Hücresel bağlantı bekleniyor":"Hücresel bağlantı hazır; USB istemcisi bekleniyor";} }
         } catch (IOException | RuntimeException e) { fail(stage,e); }
     }
-    // A terminated/stopped session requires a new explicit user start.
-    @Override public int onStartCommand(Intent intent, int flags, int startId) { return START_NOT_STICKY; }
+    // A user-started foreground session may be recreated after an OS memory kill.
+    // stopService/stopSelf remain explicit stops; Android force-stop is respected.
+    @Override public int onStartCommand(Intent intent, int flags, int startId) { return lifecycle.acceptsNetwork() ? START_STICKY : START_NOT_STICKY; }
     private synchronized void releaseResources() {
         stopping = true;
+        powerHandler.removeCallbacksAndMessages(null);
+        if(transferWake!=null&&transferWake.isHeld())transferWake.release();
+        if(health!=null){health.close();health=null;}
         if (pairing != null) pairing.close();
         pairing=null;
         if (listener != null) try { listener.close(); } catch (IOException ignored) {}
