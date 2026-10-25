@@ -109,6 +109,21 @@ class Program
             Require(stale.Completed&&recoveries==1,"stale recovery was not idempotent");
             Console.WriteLine("PASS restart recovery: live owner refusal, incomplete rollback blocks activation, abandoned recovery and completed-session skip");
             var p=PlanForSelf();
+            var guardEvents=new List<string>();
+            void SharingGuard(bool enabled,bool v4,bool v6,bool live)=>Wfp.UpdateSharing(enabled,v4,v6,live,
+                ()=>guardEvents.Add("delete-v4"),()=>guardEvents.Add("add-v4"),()=>guardEvents.Add("delete-forward"),()=>guardEvents.Add("add-forward"));
+            SharingGuard(false,false,false,false);
+            Require(guardEvents.SequenceEqual(new[]{"delete-forward"}),"completed rollback recreated guards or tried to delete an absent base filter");
+            guardEvents.Clear();SharingGuard(false,false,true,true);
+            Require(guardEvents.SequenceEqual(new[]{"add-v4","delete-forward"}),"partial active rollback failed to restore base IPv4 protection");
+            guardEvents.Clear();SharingGuard(false,true,true,true);
+            Require(guardEvents.SequenceEqual(new[]{"delete-v4","add-v4","delete-forward"}),"repeat hotspot stop failed to retain base guard");
+            foreach(var missing in new[]{(false,true),(true,false),(false,false)}){
+                guardEvents.Clear();bool refused=false;
+                try{SharingGuard(true,missing.Item1,missing.Item2,true);}catch(IOException){refused=true;}
+                Require(refused&&guardEvents.Count==0,"sharing opened without complete base protection");
+            }
+            Console.WriteLine("PASS missing-filter hotspot cleanup, live base guard restoration, repeated stop and fail-closed activation");
             foreach(string fail in new[]{"none","persist","arm","guard","configure"}) {
                 var b=new MemoryBackend{Fail=fail};bool persisted=false,armed=false,complete=false;
                 try{Transaction.Apply(p,b,()=>{if(fail=="persist")throw new IOException();persisted=true;},()=>{if(fail=="arm")throw new IOException();armed=true;});}catch(IOException){}

@@ -84,12 +84,28 @@ public sealed class Wfp:IDisposable
         s.Validate(p);Check(FwpmTransactionBegin0(engine,0));
         IntPtr name=Marshal.StringToHGlobalUni(p.Tag+"-TV");
         try {
-            Guid v4=p.V4Filter;Check(FwpmFilterDeleteByKey0(engine,ref v4));
-            Add(p,p.V4Filter,new Guid("1e5c9fae-8a84-4135-a331-950b54229ecd"),true,name,enabled?s.PrivateIndex:0);
-            foreach(Guid key in new[]{s.ForwardV4,s.ForwardV6}){var id=key;Deleted(FwpmFilterDeleteByKey0(engine,ref id),0x80320003);}
-            if(enabled){Forward(p,s,s.ForwardV4,new Guid("a82acc24-4ee1-4ee1-b465-fd1d25cb10a4"),true,name);Forward(p,s,s.ForwardV6,new Guid("7b964818-19c7-493a-b71f-832c3684d28c"),false,name);}
+            UpdateSharing(enabled,Exists(p.V4Filter),Exists(p.V6Filter),
+                ProcessIdentity.Alive(p.GuardianPid,p.GuardianStart)&&ProcessIdentity.Alive(p.WorkerPid,p.WorkerStart),
+                ()=>{Guid v4=p.V4Filter;Check(FwpmFilterDeleteByKey0(engine,ref v4));},
+                ()=>Add(p,p.V4Filter,new Guid("1e5c9fae-8a84-4135-a331-950b54229ecd"),true,name,enabled?s.PrivateIndex:0),
+                ()=>{foreach(Guid key in new[]{s.ForwardV4,s.ForwardV6}){var id=key;Deleted(FwpmFilterDeleteByKey0(engine,ref id),0x80320003);}},
+                ()=>{Forward(p,s,s.ForwardV4,new Guid("a82acc24-4ee1-4ee1-b465-fd1d25cb10a4"),true,name);Forward(p,s,s.ForwardV6,new Guid("7b964818-19c7-493a-b71f-832c3684d28c"),false,name);});
             Check(FwpmTransactionCommit0(engine));
         }catch{FwpmTransactionAbort0(engine);throw;}finally{Marshal.FreeHGlobal(name);}
+    }
+    // Called inside the native transaction. Cleanup may follow a partial or
+    // already-completed guard rollback; absence must not trap the UI in recovery.
+    // A live session keeps its base IPv4 guard, and sharing never starts without
+    // both base guards. Delegate tests exercise this production decision path.
+    public static void UpdateSharing(bool enabled,bool v4,bool v6,bool live,
+        Action deleteV4,Action addV4,Action deleteForward,Action addForward)
+    {
+        if(enabled&&(!v4||!v6))throw new IOException("USB ağ koruması eksik; bağlantıyı kesip yeniden bağlanın.");
+        if(!enabled&&live&&!v6)throw new IOException("USB IPv6 koruması eksik; bağlantıyı kesip yeniden bağlanın.");
+        if(v4)deleteV4();
+        if(v4||live)addV4();
+        deleteForward();
+        if(enabled)addForward();
     }
     void Forward(Plan p,SharingState s,Guid key,Guid layer,bool ipv4,IntPtr name)
     {
