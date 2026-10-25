@@ -23,6 +23,7 @@ internal sealed class SystemNetwork: IAsyncDisposable
     Task? heartbeat,read;
     readonly object disposeGate=new();Task? disposal;
     Guid adapterGuid;
+    bool receivedStop;
     public bool Active {get;private set;}
     public string? SessionFolder {get;private set;}
     public sealed record HotspotClient([property:System.Text.Json.Serialization.JsonPropertyName("mac")]string Mac,[property:System.Text.Json.Serialization.JsonPropertyName("names")]string[] Names);
@@ -54,15 +55,28 @@ internal sealed class SystemNetwork: IAsyncDisposable
         await writer.WriteLineAsync(JsonSerializer.Serialize(new{Transport=transport,Token=token,MaxSeconds=maxSeconds,MaxPayloadBytes=maxSeconds==0?0L:1048576L,Profile=settings?.Mode??"auto",UploadMbps=settings?.UploadMbps??0,DownloadMbps=settings?.DownloadMbps??0,Adaptive=settings?.Adaptive??false,DnsProfile=settings?.DnsProfile??"adguard"}));token="";
         commands=writer;
         heartbeat=Task.Run(async()=>{try{while(!stop.IsCancellationRequested){await Command("heartbeat");await Task.Delay(1000,stop.Token);}}catch{}finally{try{writer.Dispose();}catch{}}});
-        read=Task.Run(async()=>{try{using var reader=new StreamReader(pipe,Encoding.UTF8,false,4096,true);while(await reader.ReadLineAsync(stop.Token) is string line){using var doc=JsonDocument.Parse(line);var item=doc.RootElement;string type=item.GetProperty("type").GetString()??"";if(type=="network-active"){Active=false;adapterGuid=item.GetProperty("guid").GetGuid();SessionFolder=item.GetProperty("session").GetString();}if(type=="windows-connectivity"){var result=item.GetProperty("result");Active=Readiness.Healthy(result)&&result.GetProperty("adapterGuid").GetGuid()==adapterGuid;}if(type=="sharing-state"){SharingClients=item.TryGetProperty("clients",out var clients)?clients.Deserialize<HotspotClient[]>()??Array.Empty<HotspotClient>():Array.Empty<HotspotClient>();SharingClientsError=item.TryGetProperty("clientsError",out var clientError)?clientError.GetString():null;}if(type=="sharing-state")SharingStatus=item.GetProperty("configured").GetBoolean()?"Windows ICS kaynağı: TetherMax · IPFORWARD koruması gözlendi · TV testi gerekli":"Windows paylaşımı etkin değil.";if(type=="sharing-error")SharingStatus="Paylaşım güvenlik hatası: "+item.GetProperty("message").GetString();if(type=="network-stopped"){Active=false;SharingStatus="TetherMax bağlantısı kapalı; paylaşım kurtarma sonucunu denetleyin.";}report(line);}}catch(Exception e){if(!stop.IsCancellationRequested)report("Ağ yardımcısı bağlantısı kapandı: "+e.Message);}finally{Active=false;if(!stop.IsCancellationRequested)report(JsonSerializer.Serialize(new{type="network-channel-closed"}));}});
+        read=Task.Run(async()=>{try{using var reader=new StreamReader(pipe,Encoding.UTF8,false,4096,true);while(await reader.ReadLineAsync(stop.Token) is string line){using var doc=JsonDocument.Parse(line);var item=doc.RootElement;string type=item.GetProperty("type").GetString()??"";if(type=="network-active"){Active=false;adapterGuid=item.GetProperty("guid").GetGuid();SessionFolder=item.GetProperty("session").GetString();}if(type=="windows-connectivity"){var result=item.GetProperty("result");Active=Readiness.Healthy(result)&&result.GetProperty("adapterGuid").GetGuid()==adapterGuid;}if(type=="sharing-state"){SharingClients=item.TryGetProperty("clients",out var clients)?clients.Deserialize<HotspotClient[]>()??Array.Empty<HotspotClient>():Array.Empty<HotspotClient>();SharingClientsError=item.TryGetProperty("clientsError",out var clientError)?clientError.GetString():null;}if(type=="sharing-state")SharingStatus=item.GetProperty("configured").GetBoolean()?"Windows ICS kaynağı: TetherMax · IPFORWARD koruması gözlendi · TV testi gerekli":"Windows paylaşımı etkin değil.";if(type=="sharing-error")SharingStatus="Paylaşım güvenlik hatası: "+item.GetProperty("message").GetString();if(type=="network-stopped"){receivedStop=true;Active=false;SharingStatus="TetherMax bağlantısı kapalı; paylaşım kurtarma sonucunu denetleyin.";}report(line);}}catch(Exception e){if(!stop.IsCancellationRequested)report("Ağ yardımcısı bağlantısı kapandı: "+e.Message);}finally{Active=false;if(!stop.IsCancellationRequested&&!receivedStop)report(JsonSerializer.Serialize(new{type="network-channel-closed"}));}});
     }
-    public ValueTask DisposeAsync() {lock(disposeGate)return new ValueTask(disposal??=DisposeCore());}
+    public ValueTask DisposeAsync() {lock(disposeGate){if(disposal==null||disposal.IsFaulted)disposal=DisposeCore();return new ValueTask(disposal);}}
     async Task DisposeCore()
     {
-        stop.Cancel();pipe.Dispose();
-        if(heartbeat!=null)await heartbeat;if(read!=null)await read;
-        // Closing IPC asks the guardian to recover; never forcibly terminate it.
-        if(guardian!=null){using var deadline=new CancellationTokenSource(TimeSpan.FromSeconds(50));try{await guardian.WaitForExitAsync(deadline.Token);}catch(OperationCanceledException e){throw new IOException("Ağ kurtarması henüz tamamlanmadı; yeni bağlantı güvenli biçimde engellendi.",e);}guardian.Dispose();}
-        stop.Dispose();
+        Active=false;
+        try {
+            // Keep the report reader alive until rollback completes.
+            // Closing IPC remains the fallback for a failed graceful stop.
+            if(commands!=null) {
+                try{await Command("stop").WaitAsync(TimeSpan.FromSeconds(3));}
+                catch{pipe.Dispose();}
+            } else pipe.Dispose();
+            if(guardian!=null) {
+                using var deadline=new CancellationTokenSource(TimeSpan.FromSeconds(120));
+                try{await guardian.WaitForExitAsync(deadline.Token);}
+                catch(OperationCanceledException e){throw new IOException("Ağ kurtarması henüz tamamlanmadı; yeni bağlantı güvenli biçimde engellendi.",e);}
+            }
+        } finally {
+            stop.Cancel();pipe.Dispose();
+            if(heartbeat!=null)await heartbeat;if(read!=null)await read;
+        }
+        guardian?.Dispose();stop.Dispose();
     }
 }

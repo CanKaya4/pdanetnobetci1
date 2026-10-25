@@ -97,6 +97,17 @@ class Program
             if(args.Length!=0)throw new Exception("Unknown test mode");
             Require(Marshal.SizeOf<Wfp.Filter>()==200&&Marshal.SizeOf<Wfp.Condition>()==40&&Marshal.SizeOf<Wfp.Sublayer>()==72,"x64 WFP ABI mismatch");
             Console.WriteLine("PASS WFP x64 ABI sizes and offsets");
+            string staleFolder=Path.Combine(Path.GetTempPath(),"TetherMax-stale-"+Guid.NewGuid().ToString("N"));Directory.CreateDirectory(staleFolder);
+            var stale=new Journal(staleFolder,false);stale.Intent(PlanForSelf());int recoveries=0;
+            void RecoverFixture(Journal j,Plan plan){recoveries++;j.Complete();}
+            bool liveRefused=false;try{StaleSessions.Recover(new[]{staleFolder},f=>new Journal(f,false),(_,_)=>true,RecoverFixture);}catch(IOException){liveRefused=true;}
+            Require(liveRefused&&recoveries==0&&!stale.Completed,"live session touched by stale recovery");
+            bool failedRecovery=false;try{StaleSessions.Recover(new[]{staleFolder},f=>new Journal(f,false),(_,_)=>false,(_,_)=>{});}catch(IOException){failedRecovery=true;}
+            Require(failedRecovery&&!stale.Completed,"unconfirmed rollback permitted activation");
+            StaleSessions.Recover(new[]{staleFolder},f=>new Journal(f,false),(_,_)=>false,RecoverFixture);
+            StaleSessions.Recover(new[]{staleFolder},f=>new Journal(f,false),(_,_)=>true,RecoverFixture);
+            Require(stale.Completed&&recoveries==1,"stale recovery was not idempotent");
+            Console.WriteLine("PASS restart recovery: live owner refusal, incomplete rollback blocks activation, abandoned recovery and completed-session skip");
             var p=PlanForSelf();
             foreach(string fail in new[]{"none","persist","arm","guard","configure"}) {
                 var b=new MemoryBackend{Fail=fail};bool persisted=false,armed=false,complete=false;

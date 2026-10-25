@@ -116,7 +116,7 @@ internal sealed partial class Dashboard : Window
         ((StackPanel)DiagnosticsHost.Content).Children.Add(log);
         Loaded+=async(_,_)=>{if(preview)return;wantsDaily=!manualStart&&DailyReady&&reconnect.IsChecked==true;await Refresh();timer.Start();};
         timer.Tick+=async(_,_)=>{if(busy||connecting||refreshing||closing)return;sessionDetails.Text=((devices.SelectedItem as Device)?.Model??"Telefon bekleniyor")+" · USB · Profil: "+trafficPanel.Settings.Mode+(connectedAt.HasValue?" · Süre: "+(DateTime.UtcNow-connectedAt.Value).ToString(@"hh\:mm\:ss"):"");await Refresh();if(engine?.HasExited==true){Note("Motor durdu.");await Disconnect();}if(wantsDaily&&reconnect.IsChecked==true&&DateTime.UtcNow>=nextReconnect&&engine==null&&systemNetwork==null&&selectedSerial!=null&&devices.Items.Cast<Device>().Any(d=>d.Serial==selectedSerial))await ConnectSystemNetwork(false,true);};
-        Closing+=async(_,e)=>{if(preview||closing)return;e.Cancel=true;closing=true;timer.Stop();await Disconnect();Close();};
+        Closing+=async(_,e)=>{if(preview||closing)return;e.Cancel=true;closing=true;timer.Stop();try{await Disconnect();Close();}catch(Exception error){closing=false;timer.Start();Note("Kapanış kurtarması: "+error.Message);}};
     }
     sealed record Device(string Serial,string Model) { public override string ToString()=>Model+" · "+Serial; }
     sealed record Preferences(string? Serial,bool Reconnect,TrafficSettings? Traffic=null,bool LightTheme=false);
@@ -267,6 +267,7 @@ internal sealed partial class Dashboard : Window
         var stopped=systemNetwork;
         await operations.WaitAsync();
         try { if(stopped==null||!ReferenceEquals(systemNetwork,stopped))return;await Cleanup(wantsDaily); }
+        catch(Exception error){Phase(ConnectionPhase.Failed,"Kurtarma bekliyor · "+error.Message); }
         finally { operations.Release(); }
     }
     async Task ConnectSystemNetwork(bool diagnostic=true,bool automatic=false)

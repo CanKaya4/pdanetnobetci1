@@ -2,6 +2,10 @@ using System.Net;
 using System.Net.Sockets;
 using TetherMax;
 if(args.SequenceEqual(new[]{"--guardian-fixture"})){await Task.Delay(600);return;}
+if(args.Length==2&&args[0]=="--hotspot-reload"){
+ HotspotPreferences.FilePath=args[1];var value=HotspotPreferences.Read();
+ if(value?.Ssid!="Salon TV"||value.Band!=1||value.Password!="Loopback-Only-Password")throw new Exception("hotspot process reload failed");return;
+}
 static void Require(bool condition,string message){if(!condition)throw new Exception(message);}
 Pairing.Folder=Path.Combine(Path.GetTempPath(),"TetherMax-connect-"+Guid.NewGuid().ToString("N"));
 try {
@@ -10,10 +14,32 @@ try {
   var first=network.DisposeAsync().AsTask();var second=network.DisposeAsync().AsTask();Require(!second.IsCompleted||exited.IsCompletedSuccessfully,"concurrent disposal skipped guardian recovery wait");await Task.WhenAll(first,second);Require(exited.IsCompletedSuccessfully,"recovery wait returned before guardian exit");
  }Console.WriteLine("PASS concurrent network disposal shares the guardian recovery completion; no network helper started");
 
+ // A real private pipe verifies graceful stop arrives before channel closure.
+ var graceful=new SystemNetwork();var flags=System.Reflection.BindingFlags.NonPublic|System.Reflection.BindingFlags.Instance;
+ var server=(System.IO.Pipes.NamedPipeServerStream)typeof(SystemNetwork).GetField("pipe",flags)!.GetValue(graceful)!;
+ string name=(string)typeof(SystemNetwork).GetProperty("Name",flags)!.GetValue(graceful)!;
+ using(var peer=new System.IO.Pipes.NamedPipeClientStream(".",name,System.IO.Pipes.PipeDirection.InOut,System.IO.Pipes.PipeOptions.Asynchronous)){
+  var accepting=server.WaitForConnectionAsync();await peer.ConnectAsync(3000);await accepting;
+  var writer=new StreamWriter(server,new System.Text.UTF8Encoding(false),4096,true){AutoFlush=true};
+  typeof(SystemNetwork).GetField("commands",flags)!.SetValue(graceful,writer);
+  using var reader=new StreamReader(peer);var command=reader.ReadLineAsync();
+  await graceful.DisposeAsync();Require(await command=="stop","shutdown closed IPC before graceful stop");
+ }
+ Console.WriteLine("PASS real private pipe graceful stop before disposal and concurrent guardian exit wait");
  var cellular=new CellularAvailability();Require(!cellular.Observe(null)&&!cellular.Observe("unavailable")&&cellular.Observe("unavailable")&&!cellular.Observe(null),"cellular recovery debounce failed");
  Require(!cellular.Observe("CELLULAR Network fixture")&&!cellular.Observe(null)&&!cellular.Observe(null)&&cellular.Observe(null),"cellular recovery did not reset after good sample");Console.WriteLine("PASS transient cellular loss is debounced and recovery is requested once");
  for(int i=0;i<10;i++)Require(!cellular.Observe("control-unavailable"),"control delay tore down a working data path");
  string fixturePassword="Loopback-Only-Password";var encrypted=System.Security.Cryptography.ProtectedData.Protect(System.Text.Encoding.UTF8.GetBytes(fixturePassword),null,System.Security.Cryptography.DataProtectionScope.CurrentUser);var preferences=new HotspotPreferences("fixture",1,Convert.ToBase64String(encrypted));Require(preferences.Password==fixturePassword,"DPAPI password roundtrip failed");Require(!System.Text.Json.JsonSerializer.Serialize(preferences).Contains(fixturePassword),"password property leaked into JSON");Console.WriteLine("PASS Windows DPAPI hotspot password roundtrip; plaintext excluded from serialized settings");
+ HotspotPreferences.FilePath=Path.Combine(Pairing.Folder,"hotspot.json");
+ HotspotPreferences.Save("Salon TV",fixturePassword,1);
+ var savedHotspot=HotspotPreferences.Read();Require(savedHotspot?.Ssid=="Salon TV"&&savedHotspot.Band==1&&savedHotspot.Password==fixturePassword,"saved hotspot did not survive reload");
+ Require(!File.ReadAllText(HotspotPreferences.FilePath).Contains(fixturePassword),"password leaked to disk");
+ using(var reload=System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(Environment.ProcessPath!){UseShellExecute=false,CreateNoWindow=true,ArgumentList={"--hotspot-reload",HotspotPreferences.FilePath}})!){await reload.WaitForExitAsync();Require(reload.ExitCode==0,"hotspot settings failed in fresh process");}
+ HotspotPreferences.Save("Salon TV 2",fixturePassword+"2",1);
+ Require(HotspotPreferences.Read()?.Password==fixturePassword+"2","edited password was not persisted");
+ bool invalid=false;try{HotspotPreferences.Save("Salon TV","short",1);}catch(IOException){invalid=true;}
+ Require(invalid&&HotspotPreferences.Read()?.Password==fixturePassword+"2","invalid edit destroyed saved credentials");
+ Console.WriteLine("PASS persisted SSID/password/2.4 GHz reload, encrypted disk storage, edits and invalid-input preservation");
  var requestedSettings=new TrafficSettings("gaming",12,60,true,"adguard");
  using(var ack=System.Text.Json.JsonDocument.Parse(System.Text.Json.JsonSerializer.Serialize(new{phoneSettingsConfirmed=true,settings=requestedSettings})))Require(requestedSettings.Acknowledged(ack.RootElement),"complete settings acknowledgement rejected");
  using(var oldAck=System.Text.Json.JsonDocument.Parse(System.Text.Json.JsonSerializer.Serialize(new{phoneSettingsConfirmed=true,settings=requestedSettings with{UploadMbps=10}})))Require(!requestedSettings.Acknowledged(oldAck.RootElement),"stale ceiling acknowledged");

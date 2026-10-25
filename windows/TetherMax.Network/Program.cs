@@ -39,12 +39,7 @@ public static class Program
                 return 0;
             }
             if(args.SequenceEqual(new[]{"recover-stale","--approve-network-recovery"})) {
-                Admin();foreach(string folder in Directory.EnumerateDirectories(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData),"TetherMax-Network-*")) {
-                    if(!File.Exists(Path.Combine(folder,"intent.json"))||File.Exists(Path.Combine(folder,"complete")))continue;
-                    var journal=new Journal(folder);var plan=journal.Read();
-                    if(ProcessIdentity.Alive(plan.GuardianPid,plan.GuardianStart))throw new IOException("Etkin TetherMax oturumu var; önce bağlantıyı kesin.");
-                    Watchdog.Recover(journal,plan,new NativeBackend(journal));
-                }return 0;
+                Admin();RecoverStale();return 0;
             }
             if(args.SequenceEqual(new[]{"recovery-self-test","--approve-network-recovery"})) {Admin();await DurableRecovery.SelfTest();return 0;}
             if(args.Length==2&&args[0]=="emergency") {Admin();DurableRecovery.Run(new Journal(args[1]));return 0;}
@@ -55,6 +50,10 @@ public static class Program
             Admin();return await Connect(args[1]);
         }catch(Exception e){Console.Error.WriteLine(e.Message);return 1;}
     }
+    static void RecoverStale() => StaleSessions.Recover(
+        Directory.EnumerateDirectories(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData),"TetherMax-Network-*"),
+        folder=>new Journal(folder),ProcessIdentity.Alive,
+        (journal,plan)=>Watchdog.Recover(journal,plan,new NativeBackend(journal)));
     sealed record Request(string Transport,string Token,int MaxSeconds,long MaxPayloadBytes,string Profile="auto",double UploadMbps=0,double DownloadMbps=0,bool Adaptive=false,string DnsProfile="adguard");
     static async Task<string> CellularStatus(string engine,string transport,string bearer)
     {
@@ -90,9 +89,9 @@ public static class Program
             throw new IOException("Invalid private transport or bounded test duration");
         if(!new[]{"auto","gaming","streaming","daily","maximum"}.Contains(request.Profile)||!double.IsFinite(request.UploadMbps)||!double.IsFinite(request.DownloadMbps)||request.UploadMbps<0||request.UploadMbps>10000||request.DownloadMbps<0||request.DownloadMbps>10000||(request.Adaptive&&request.UploadMbps==0))throw new IOException("Invalid traffic profile");
         new LiveTrafficSettings(request.Profile,request.UploadMbps,request.DownloadMbps,request.Adaptive,request.DnsProfile).Validate();
-        // Refuse a new activation while earlier durable intents need recovery.
-        foreach(string folder in Directory.EnumerateDirectories(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData),"TetherMax-Network-*"))
-            if(File.Exists(Path.Combine(folder,"intent.json"))&&!File.Exists(Path.Combine(folder,"complete")))throw new IOException("Unrecovered prior network session: "+folder);
+        // The controller mutex is held; recover old intents before activation.
+        try{RecoverStale();}
+        catch(Exception e){try{await writer.WriteLineAsync(JsonSerializer.Serialize(new{type="network-error",message=e.Message}));}catch{}throw;}
         Guid id=Guid.NewGuid();var journal=Journal.Create(id);
         using(var controller=Process.GetCurrentProcess())journal.WriteNew("controller-process.json",JsonSerializer.Serialize(new{pid=controller.Id,start=controller.StartTime.ToUniversalTime().Ticks}));
         string engine=Path.Combine(AppContext.BaseDirectory,"tethermax-engine.exe"),dll=Path.Combine(AppContext.BaseDirectory,"wintun.dll");
@@ -143,14 +142,15 @@ public static class Program
             telemetry=Task.Run(async()=>{try{using var log=new StreamWriter(new FileStream(journal.PathFor("host-counters.jsonl"),FileMode.CreateNew,FileAccess.Write,FileShare.Read)){AutoFlush=true};while(await worker.StandardOutput.ReadLineAsync() is string data){using var item=JsonDocument.Parse(data);if(item.RootElement.TryGetProperty("type",out var sampleType)&&sampleType.GetString() is "ip-counters" or "ip-counters-final")lastCounters=item.RootElement.Clone();await log.WriteLineAsync(JsonSerializer.Serialize(new{observedAt=DateTimeOffset.UtcNow,payload=item.RootElement.Clone()}));try{await Send(new{type="ip-counters",payload=item.RootElement.Clone()});}catch{}}}catch{lifetime.Cancel();}});
             await Send(new{type="network-active",adapter=name,guid,session=journal.Folder,scope="system-wide IPv4; non-loopback IPv6 blocked; not carrier certification"});
             sharingMonitor=Task.Run(async()=>{try{while(!sharingStop.IsCancellationRequested){await Task.Delay(5000,sharingStop.Token);try{await Send(OwnedSharing.Observe(journal,plan));}catch(IOException e) when((e.HResult&0xffff)==32||(e.HResult&0xffff)==33){/* Sharing helper or recovery owns the lock. */}}}catch(OperationCanceledException){}catch(Exception e){try{await Send(new{type="sharing-error",message=e.Message});}catch{}lifetime.Cancel();}});
-            connectivity=Task.Run(async()=>{try{string result=await ConnectivityChecks.Run(guid,connectivityStop.Token);journal.WriteNew("windows-connectivity.json",result);await Send(new{type="windows-connectivity",result=JsonSerializer.Deserialize<JsonElement>(result)});}catch(Exception e){try{journal.WriteNew("windows-connectivity-error.txt",e.Message);await Send(new{type="network-error",message="Tunnel connectivity verification failed"});}catch{}lifetime.Cancel();}});
-            Task heartbeat=Task.Run(async()=>{try{while(!lifetime.IsCancellationRequested){using var timeout=CancellationTokenSource.CreateLinkedTokenSource(lifetime.Token);timeout.CancelAfter(TimeSpan.FromSeconds(5));string? command=await reader.ReadLineAsync(timeout.Token);if(command=="heartbeat")continue;if(command==null||command.Length>4096)break;
+            connectivity=Task.Run(async()=>{try{string result=await ConnectivityChecks.Run(guid,connectivityStop.Token);connectivityStop.Token.ThrowIfCancellationRequested();journal.WriteNew("windows-connectivity.json",result);await Send(new{type="windows-connectivity",result=JsonSerializer.Deserialize<JsonElement>(result)});}catch(OperationCanceledException) when(connectivityStop.IsCancellationRequested){}catch(Exception e){try{journal.WriteNew("windows-connectivity-error.txt",e.Message);await Send(new{type="network-error",message="Tunnel connectivity verification failed"});}catch{}lifetime.Cancel();}});
+            Task heartbeat=Task.Run(async()=>{try{while(!lifetime.IsCancellationRequested){using var timeout=CancellationTokenSource.CreateLinkedTokenSource(lifetime.Token);timeout.CancelAfter(TimeSpan.FromSeconds(5));string? command=await reader.ReadLineAsync(timeout.Token);if(command=="heartbeat")continue;if(command=="stop")break;if(command==null||command.Length>4096)break;
                     using var change=JsonDocument.Parse(command);var value=change.RootElement;
                     if(value.GetProperty("type").GetString()!="traffic-settings")break;
                     var settings=value.GetProperty("settings").Deserialize<LiveTrafficSettings>()??throw new IOException("Settings missing");await WorkerInput(settings.Frame());}}catch{}finally{lifetime.Cancel();}});
             var uptime=Stopwatch.StartNew();
             while(!lifetime.IsCancellationRequested&&!worker.HasExited&&watcher is {HasExited:false}&&(maxSeconds==0||uptime.Elapsed<TimeSpan.FromSeconds(maxSeconds)))await Task.Delay(100,lifetime.Token);
-        }catch(Exception e){try{journal.WriteNew("activation-error.txt",e.ToString());}catch{}try{await Send(new{type="network-error",message=e.Message});}catch{}}
+        }catch(OperationCanceledException) when(lifetime.IsCancellationRequested){}
+        catch(Exception e){try{journal.WriteNew("activation-error.txt",e.ToString());}catch{}try{await Send(new{type="network-error",message=e.Message});}catch{}}
         finally {
             sharingStop.Cancel();if(sharingMonitor!=null)await sharingMonitor;
             connectivityStop.Cancel();if(connectivity!=null)await connectivity;
