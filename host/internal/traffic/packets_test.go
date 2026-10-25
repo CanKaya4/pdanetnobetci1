@@ -211,3 +211,63 @@ func TestAutomaticCapacityLearningAndUnlimitedIdle(t *testing.T) {
 		t.Fatal("quiet link retained learned limit")
 	}
 }
+
+func TestCapacityCollapseUsesBacklogWithoutChangingIdleDirection(t *testing.T) {
+	for _, down := range []bool{false, true} {
+		m := manager(t, Settings{Mode: Gaming, UploadMbps: 100, DownloadMbps: 100, Adaptive: true})
+		q := m.PacketQueue(down)
+		now := time.Now()
+		for range 5 {
+			now = now.Add(time.Second)
+			m.Observe(now, 20*time.Millisecond, true)
+		}
+		for range 16 {
+			q.Enqueue(packet(1, 100, 1500))
+		}
+		// 4 Mbps is far below the old 100 Mbps ceiling, but packets are queued.
+		for range 3 {
+			now = now.Add(time.Second)
+			m.addBytes(down, 500000)
+			m.Observe(now, 120*time.Millisecond, true)
+		}
+		snapshot := m.Snapshot()
+		reduced, other := snapshot.UploadCeilingMbps, snapshot.DownloadCeilingMbps
+		if down {
+			reduced, other = other, reduced
+		}
+		if reduced <= 0 || reduced >= 4 || other != 100 {
+			t.Fatalf("capacity collapse not isolated to loaded direction: %+v", snapshot)
+		}
+		q.Close()
+		if q.pending.Load() != 0 || m.packetPending.Load() != 0 {
+			t.Fatal("closed pressure counter leaked")
+		}
+	}
+}
+func TestLowDemandAndRemoteDelayDoNotInventCapacityCollapse(t *testing.T) {
+	m := manager(t, Settings{Mode: Gaming, UploadMbps: 100, DownloadMbps: 100, Adaptive: true})
+	q := m.PacketQueue(true)
+	now := time.Now()
+	for range 5 {
+		now = now.Add(time.Second)
+		m.Observe(now, 20*time.Millisecond, true)
+	}
+	for range 5 {
+		now = now.Add(time.Second)
+		m.addBytes(true, 500000)
+		m.Observe(now, 120*time.Millisecond, true)
+	}
+	if m.Snapshot().DownloadCeilingMbps != 100 {
+		t.Fatal("low application demand mistaken for congestion")
+	}
+	for range 16 {
+		q.Enqueue(packet(1, 100, 1500))
+	}
+	for range 5 {
+		now = now.Add(time.Second)
+		m.Observe(now, 120*time.Millisecond, true)
+	}
+	if m.Snapshot().DownloadCeilingMbps != 100 {
+		t.Fatal("zero traffic mistaken for cellular capacity")
+	}
+}

@@ -13,7 +13,7 @@ foreach($name in $names){
 $engineSources=Get-ChildItem "$taskRoot/engine/src","$taskRoot/engine/test" -Filter *.java -Recurse | ForEach-Object FullName
 & "$javaBin/javac.exe" -encoding UTF-8 --release 8 -Xlint:all,-options -Werror -d $out $engineSources
 if($LASTEXITCODE){throw 'Engine fixture compilation failed'}
-foreach($name in @('RelayDnsTest','DnsOverHttpsTest')){
+foreach($name in @('RelayDnsTest','DnsOverHttpsTest','RelayFaultTest')){
  & "$javaBin/java.exe" -cp $out "io.tethermax.engine.$name"
  if($LASTEXITCODE){throw "Failed: $name"}
 }

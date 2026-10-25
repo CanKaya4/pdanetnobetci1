@@ -18,13 +18,13 @@ internal sealed class SystemNetwork: IAsyncDisposable
     readonly CancellationTokenSource stop=new();
     Process? guardian;
     StreamWriter? commands;readonly SemaphoreSlim commandLock=new(1,1);
-    async Task Command(string line){await commandLock.WaitAsync(stop.Token);try{if(commands==null)throw new IOException("Ağ yardımcısı hazır değil.");await commands.WriteLineAsync(line);}finally{commandLock.Release();}}
+    async Task Command(string line){using var deadline=CancellationTokenSource.CreateLinkedTokenSource(stop.Token);deadline.CancelAfter(TimeSpan.FromSeconds(3));await commandLock.WaitAsync(deadline.Token);try{if(commands==null)throw new IOException("Ağ yardımcısı hazır değil.");await commands.WriteLineAsync(line.AsMemory(),deadline.Token);}finally{commandLock.Release();}}
     public Task UpdateTraffic(TrafficSettings settings)=>Active?Command(JsonSerializer.Serialize(new{type="traffic-settings",settings})):throw new IOException("Önce USB bağlantısını kurun.");
     Task? heartbeat,read;
     readonly object disposeGate=new();Task? disposal;
     Guid adapterGuid;
-    bool receivedStop;
-    public bool Active {get;private set;}
+    volatile bool receivedStop;
+    bool active; public bool Active {get=>Volatile.Read(ref active);private set=>Volatile.Write(ref active,value);}
     public string? SessionFolder {get;private set;}
     public sealed record HotspotClient([property:System.Text.Json.Serialization.JsonPropertyName("mac")]string Mac,[property:System.Text.Json.Serialization.JsonPropertyName("names")]string[] Names);
     public HotspotClient[] SharingClients {get;private set;}=Array.Empty<HotspotClient>();
@@ -49,13 +49,35 @@ internal sealed class SystemNetwork: IAsyncDisposable
         foreach(string arg in new[]{"connect",Name,"--approve-global-route-change","--approve-usb-test"})start.ArgumentList.Add(arg);
         guardian=Process.Start(start)??throw new IOException("Yönetici ağ süreci başlatılamadı.");
         using var timeout=CancellationTokenSource.CreateLinkedTokenSource(stop.Token,cancellation);timeout.CancelAfter(TimeSpan.FromSeconds(45));
-        await pipe.WaitForConnectionAsync(timeout.Token);
+        await SessionLifecycle.WaitForHelper(pipe.WaitForConnectionAsync(timeout.Token),guardian,timeout.Token);
         if(!GetNamedPipeClientProcessId(pipe.SafePipeHandle,out uint pid)||pid!=guardian.Id)throw new IOException("Ağ yardımcısının IPC kimliği eşleşmiyor.");
         var writer=new StreamWriter(pipe,new UTF8Encoding(false),4096,true){AutoFlush=true,NewLine="\n"};
         await writer.WriteLineAsync(JsonSerializer.Serialize(new{Transport=transport,Token=token,MaxSeconds=maxSeconds,MaxPayloadBytes=maxSeconds==0?0L:1048576L,Profile=settings?.Mode??"auto",UploadMbps=settings?.UploadMbps??0,DownloadMbps=settings?.DownloadMbps??0,Adaptive=settings?.Adaptive??false,DnsProfile=settings?.DnsProfile??"adguard"}));token="";
         commands=writer;
-        heartbeat=Task.Run(async()=>{try{while(!stop.IsCancellationRequested){await Command("heartbeat");await Task.Delay(1000,stop.Token);}}catch{}finally{try{writer.Dispose();}catch{}}});
-        read=Task.Run(async()=>{try{using var reader=new StreamReader(pipe,Encoding.UTF8,false,4096,true);while(await reader.ReadLineAsync(stop.Token) is string line){using var doc=JsonDocument.Parse(line);var item=doc.RootElement;string type=item.GetProperty("type").GetString()??"";if(type=="network-active"){Active=false;adapterGuid=item.GetProperty("guid").GetGuid();SessionFolder=item.GetProperty("session").GetString();}if(type=="windows-connectivity"){var result=item.GetProperty("result");Active=Readiness.Healthy(result)&&result.GetProperty("adapterGuid").GetGuid()==adapterGuid;}if(type=="sharing-state"){SharingClients=item.TryGetProperty("clients",out var clients)?clients.Deserialize<HotspotClient[]>()??Array.Empty<HotspotClient>():Array.Empty<HotspotClient>();SharingClientsError=item.TryGetProperty("clientsError",out var clientError)?clientError.GetString():null;}if(type=="sharing-state")SharingStatus=item.GetProperty("configured").GetBoolean()?"Windows ICS kaynağı: TetherMax · IPFORWARD koruması gözlendi · TV testi gerekli":"Windows paylaşımı etkin değil.";if(type=="sharing-error")SharingStatus="Paylaşım güvenlik hatası: "+item.GetProperty("message").GetString();if(type=="network-stopped"){receivedStop=true;Active=false;SharingStatus="TetherMax bağlantısı kapalı; paylaşım kurtarma sonucunu denetleyin.";}report(line);}}catch(Exception e){if(!stop.IsCancellationRequested)report("Ağ yardımcısı bağlantısı kapandı: "+e.Message);}finally{Active=false;if(!stop.IsCancellationRequested&&!receivedStop)report(JsonSerializer.Serialize(new{type="network-channel-closed"}));}});
+        heartbeat=Task.Run(async()=>{try{while(!stop.IsCancellationRequested){await Command("heartbeat");await Task.Delay(1000,stop.Token);}}catch(OperationCanceledException)when(stop.IsCancellationRequested){}catch(Exception error){Diagnostics.Record("ipc-heartbeat",error);pipe.Dispose();}});
+        read=Task.Run(()=>ReadReports(report));
+    }
+    async Task ReadReports(Action<string> report) {
+        try {
+            using var reader=new StreamReader(pipe,Encoding.UTF8,false,4096,true);
+            while(await reader.ReadLineAsync(stop.Token) is string line) {
+                if(!NetworkReport.TryParse(line,out var document))continue;
+                using(document)try {
+                    var item=document!.RootElement;string type=item.GetProperty("type").GetString()!;
+                    if(type=="network-active"){Active=false;adapterGuid=item.GetProperty("guid").GetGuid();SessionFolder=item.GetProperty("session").GetString();}
+                    if(type=="windows-connectivity")Active=TunnelHealth.Healthy(item.GetProperty("result"),adapterGuid);
+                    if(type=="sharing-state") {
+                        SharingClients=item.TryGetProperty("clients",out var clients)?clients.Deserialize<HotspotClient[]>()??Array.Empty<HotspotClient>():Array.Empty<HotspotClient>();
+                        SharingClientsError=item.TryGetProperty("clientsError",out var error)?error.GetString():null;
+                        SharingStatus=item.GetProperty("configured").GetBoolean()?"Windows ICS kaynağı: TetherMax · TV testi gerekli":"Windows paylaşımı etkin değil.";
+                    }
+                    if(type=="sharing-error")SharingStatus="Paylaşım güvenlik hatası: "+item.GetProperty("message").GetString();
+                    if(type=="network-stopped"){receivedStop=true;Active=false;SharingStatus="TetherMax bağlantısı kapalı; kurtarma sonucunu denetleyin.";}
+                    report(line);
+                }catch(Exception error)when(error is JsonException or InvalidOperationException or FormatException or KeyNotFoundException){Diagnostics.Record("ipc-sample",error);}
+            }
+        }catch(Exception error){if(!stop.IsCancellationRequested)Diagnostics.Record("ipc-read",error);}
+        finally{Active=false;if(!stop.IsCancellationRequested&&!receivedStop)try{report(JsonSerializer.Serialize(new{type="network-channel-closed"}));}catch(Exception error){Diagnostics.Record("ipc-close-report",error);}}
     }
     public ValueTask DisposeAsync() {lock(disposeGate){if(disposal==null||disposal.IsFaulted)disposal=DisposeCore();return new ValueTask(disposal);}}
     async Task DisposeCore()
@@ -77,6 +99,7 @@ internal sealed class SystemNetwork: IAsyncDisposable
             stop.Cancel();pipe.Dispose();
             if(heartbeat!=null)await heartbeat;if(read!=null)await read;
         }
+        try{commands?.Dispose();}catch(Exception error)when(error is IOException or ObjectDisposedException){Diagnostics.Record("ipc-writer-close",error);}
         guardian?.Dispose();stop.Dispose();
     }
 }

@@ -21,8 +21,7 @@ public final class TunnelService extends Service {
         cellular = network;
         if(changed)powerHandler.post(()->{if(!stopping&&health!=null)health.registerSignal();});
         if (running()) status = "Hücresel bağlantı hazır; USB istemcisi bekleniyor";
-        LinkProperties properties=manager.getLinkProperties(network);
-        networkInfo="CELLULAR · Network "+network+" · "+(properties==null?"Arayüz bilgisi yok":properties.getInterfaceName());
+        networkInfo="CELLULAR · Network "+network+" · Bağlantı bilgisi bekleniyor";
     }
     private synchronized void fail(String step, Throwable error) {
         if (stopping) return;
@@ -43,6 +42,7 @@ public final class TunnelService extends Service {
     public static volatile String networkInfo = "Hücresel ağ henüz seçilmedi";
     public long uploaded() { Relay r=relay; return r==null?0:r.uploaded.get(); }
     public long downloaded() { Relay r=relay; return r==null?0:r.downloaded.get(); }
+    public long flowFailures(){Relay r=relay;return r==null?0:r.flowFailures.get();}
     public Relay currentRelay() { return relay; }
     public static String savedMode(Context context) { return context.getSharedPreferences("traffic",MODE_PRIVATE).getString("mode","auto"); }
     public static void requestMode(Context context,String mode) {
@@ -97,6 +97,9 @@ public final class TunnelService extends Service {
         callback = new ConnectivityManager.NetworkCallback() {
             @Override public void onAvailable(Network network) {
                 available(network);
+            }
+            @Override public void onLinkPropertiesChanged(Network network,LinkProperties properties){
+                synchronized(TunnelService.this){if(!stopping&&network.equals(cellular))networkInfo="CELLULAR · Network "+network+" · "+properties.getInterfaceName();}
             }
             @Override public void onLost(Network network) {
                 synchronized(TunnelService.this) { if (!stopping && lifecycle.acceptsNetwork() && network.equals(cellular)) { cellular = null; status = "Hücresel ağ kesildi; yeniden bağlantı bekleniyor"; networkInfo="Hücresel ağ yok"; } }
@@ -171,9 +174,9 @@ public final class TunnelService extends Service {
                         if(stopping)return;
                         if(activeListener!=null)try{activeListener.close();}catch(IOException ignored){}
                         activeListener=null;
-                        long delay=GuardianPolicy.retryDelay(++failures);
+                        failures=Math.min(7,failures+1);long delay=GuardianPolicy.retryDelay(failures);
                         if(delay<0){usbRecovery="Yeni USB bağlantıları alınamıyor. Mevcut akışlar korunuyor; aktarım bitince motoru elle yeniden başlatın.";status=usbRecovery;return;}
-                        usbRecovery="USB dinleyicisi kurtarılıyor · deneme "+failures+"/6; mevcut akışlar korunuyor";status=usbRecovery;
+                        usbRecovery=failures<=6?"USB dinleyicisi kurtarılıyor · deneme "+failures+"/6; mevcut akışlar korunuyor":"USB dinleyicisi 60 sn sonra yeniden denenecek; mevcut akışlar korunuyor";status=usbRecovery;
                         try{Thread.sleep(delay);}catch(InterruptedException stopped){Thread.currentThread().interrupt();return;}
                         continue;
                     }

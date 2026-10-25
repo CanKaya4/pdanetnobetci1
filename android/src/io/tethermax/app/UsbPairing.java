@@ -22,7 +22,8 @@ final class UsbPairing implements AutoCloseable {
     static void confirm(boolean yes) { CompletableFuture<Boolean> p = pending; if (p != null) p.complete(yes); }
     static void confirm(String expected, boolean yes) { if (expected.equals(pendingCode)) confirm(yes); }
     private final Context context;
-    private final LocalServerSocket listener;
+    private volatile LocalServerSocket listener;
+    static volatile String listenerHealth="Eşleştirme dinleyicisi hazır";
     private volatile LocalSocket active;
     private volatile boolean closed;
     private final Thread worker;
@@ -31,9 +32,24 @@ final class UsbPairing implements AutoCloseable {
     UsbPairing(Context context) throws IOException {
         this.context = context.getApplicationContext();
         listener = new LocalServerSocket("io.tethermax.pair.v2");
+        listenerHealth="Eşleştirme dinleyicisi hazır";
         worker = new Thread(() -> {
+            int failures=0;
             while (!closed) {
-                try (LocalSocket socket = listener.accept()) {
+                LocalSocket accepted;
+                try {
+                    synchronized(this){if(closed)return;if(listener==null)listener=new LocalServerSocket("io.tethermax.pair.v2");}
+                    accepted=listener.accept();failures=0;listenerHealth="Eşleştirme dinleyicisi hazır";
+                }catch(IOException error){
+                    if(closed)return;
+                    LocalServerSocket failed=listener;listener=null;if(failed!=null)try{failed.close();}catch(IOException ignored){}
+                    failures=Math.min(7,failures+1);long delay=GuardianPolicy.retryDelay(failures);
+                    if(delay<0){listenerHealth="Eşleştirme kanalı kurtarılamadı; mevcut veri akışları korunuyor";return;}
+                    listenerHealth=failures<=6?"Eşleştirme kanalı kurtarılıyor · "+failures+"/6":"Eşleştirme kanalı 60 sn sonra yeniden denenecek";
+                    try{Thread.sleep(delay);}catch(InterruptedException stopped){Thread.currentThread().interrupt();return;}
+                    continue;
+                }
+                try (LocalSocket socket = accepted) {
                     synchronized (this) { if (closed) break; active = socket; }
                     socket.setSoTimeout(90000);
                     long now = android.os.SystemClock.elapsedRealtime();
@@ -108,7 +124,7 @@ final class UsbPairing implements AutoCloseable {
     }
     @Override public synchronized void close() {
         closed = true; confirm(false);
-        try { listener.close(); } catch (IOException ignored) {}
+        LocalServerSocket owned=listener;if(owned!=null)try { owned.close(); } catch (IOException ignored) {}
         LocalSocket socket = active; if (socket != null) try { socket.close(); } catch (IOException ignored) {}
         worker.interrupt(); pendingCode = null;
     }

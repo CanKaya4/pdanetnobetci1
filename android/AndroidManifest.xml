@@ -1,4 +1,4 @@
-<manifest xmlns:android="http://schemas.android.com/apk/res/android" package="io.tethermax.app" android:versionCode="20" android:versionName="1.0.0-rc.9-mobile-guardian">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android" package="io.tethermax.app" android:versionCode="21" android:versionName="1.0.0-rc.10-stability">
     <uses-sdk android:minSdkVersion="26" android:targetSdkVersion="35" />
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />

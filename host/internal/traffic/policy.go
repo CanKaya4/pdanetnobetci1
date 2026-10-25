@@ -99,6 +99,7 @@ type Manager struct {
 	lastRTT, jitter            float64
 	lastSuccess                time.Time
 	high, low                  int
+	highUp, highDown           int
 	lastAdjustment             time.Time
 	sampleAt                   time.Time
 	sampleUp, sampleDown       uint64
@@ -127,6 +128,7 @@ func (m *Manager) resetRates() {
 	m.upRate = m.settings.UploadMbps
 	m.downRate = m.settings.DownloadMbps
 	m.high = 0
+	m.highUp, m.highDown = 0, 0
 	m.low = 0
 	m.lastAdjustment = time.Time{}
 	m.sampleAt = time.Now()
@@ -249,6 +251,14 @@ func (m *Manager) rejectedRequest() { m.mu.Lock(); m.rejected++; m.mu.Unlock() }
 func (m *Manager) Observe(now time.Time, rtt time.Duration, ok bool) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	// Invalid or out-of-order samples must not consume the byte measurement
+	// window or combine congestion evidence across an outage.
+	if now.Before(m.sampleAt) || (ok && (rtt <= 0 || rtt > 30*time.Second)) {
+		return
+	}
+	if !ok {
+		m.high, m.low, m.highUp, m.highDown = 0, 0, 0, 0
+	}
 	seconds := now.Sub(m.sampleAt).Seconds()
 	upMbps, downMbps := 0.0, 0.0
 	if seconds > 0 {
@@ -262,6 +272,22 @@ func (m *Manager) Observe(now time.Time, rtt time.Duration, ok bool) {
 		return measured >= rate*.6
 	}
 	upLoaded, downLoaded := loaded(upMbps, m.upRate), loaded(downMbps, m.downRate)
+	// Mobile capacity can fall well below the configured ceiling. A sustained
+	// local backlog with real traffic is load evidence even below 60% of that
+	// old ceiling. Read atomics only: packet dequeue takes q.mu then m.mu.
+	upBacklog, downBacklog := false, false
+	for _, q := range m.packetQueues {
+		if q.pending.Load() >= 8 {
+			if q.down {
+				downBacklog = true
+			} else {
+				upBacklog = true
+			}
+		}
+	}
+	upPressure := upBacklog && upMbps >= .25
+	downPressure := downBacklog && downMbps >= .25
+	upLoaded, downLoaded = upLoaded || upPressure, downLoaded || downPressure
 	m.sampleAt = now
 	m.sampleUp = m.upBytes
 	m.sampleDown = m.downBytes
@@ -307,22 +333,38 @@ func (m *Manager) Observe(now time.Time, rtt time.Duration, ok bool) {
 	}
 	if rtt > base+target && (upLoaded || downLoaded) {
 		m.high++
+		if upLoaded {
+			m.highUp++
+		} else {
+			m.highUp = 0
+		}
+		if downLoaded {
+			m.highDown++
+		} else {
+			m.highDown = 0
+		}
 		m.low = 0
 	} else if rtt < base+10*time.Millisecond {
 		m.low++
 		m.high = 0
+		m.highUp, m.highDown = 0, 0
 	} else {
 		m.low = 0
 		m.high = 0
+		m.highUp, m.highDown = 0, 0
 	}
 	if now.Sub(m.lastAdjustment) < 2*time.Second {
 		return
 	}
 	// Rate estimates come from actual bytes, not advertised 5G signal strength.
 	// A zero user ceiling starts unlimited; congestion discovers a working rate.
-	if m.high >= 3 {
+	if m.highUp >= 3 || m.highDown >= 3 {
 		reduce := func(current, ceiling, measured float64, down bool) float64 {
-			if current == 0 {
+			pressure := upPressure
+			if down {
+				pressure = downPressure
+			}
+			if current == 0 || pressure {
 				// Learn from a recent window rather than one quiet transfer interval.
 				rates := []float64{measured}
 				for _, o := range m.observations {
@@ -337,7 +379,12 @@ func (m *Manager) Observe(now time.Time, rtt time.Duration, ok bool) {
 					}
 				}
 				sort.Float64s(rates)
-				current = rates[(len(rates)-1)*4/5]
+				learned := rates[(len(rates)-1)*4/5]
+				if current == 0 {
+					current = learned
+				} else {
+					current = math.Min(current, learned)
+				}
 			}
 			next := math.Min(10000, math.Max(.1, current*.85))
 			if ceiling > 0 {
@@ -345,13 +392,14 @@ func (m *Manager) Observe(now time.Time, rtt time.Duration, ok bool) {
 			}
 			return next
 		}
-		if upLoaded {
+		if m.highUp >= 3 {
 			m.upRate = reduce(m.upRate, m.settings.UploadMbps, upMbps, false)
 		}
-		if downLoaded {
+		if m.highDown >= 3 {
 			m.downRate = reduce(m.downRate, m.settings.DownloadMbps, downMbps, true)
 		}
 		m.high = 0
+		m.highUp, m.highDown = 0, 0
 		m.lastAdjustment = now
 		// Wake blocked packet reads as soon as capacity changes.
 		for _, q := range m.packetQueues {
@@ -362,7 +410,7 @@ func (m *Manager) Observe(now time.Time, rtt time.Duration, ok bool) {
 			if current == 0 {
 				return ceiling
 			}
-			next := current*1.08 + .1
+			next := math.Min(10000, current*1.08+.1)
 			if ceiling > 0 {
 				next = math.Min(ceiling, next)
 			}

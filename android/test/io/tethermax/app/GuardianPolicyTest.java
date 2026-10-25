@@ -14,7 +14,7 @@ public final class GuardianPolicyTest {
         check(Double.isNaN(GuardianPolicy.cpuPercent(-1,100)));
         check(Double.isNaN(GuardianPolicy.cpuPercent(1,0)));
         check(GuardianPolicy.retryDelay(1)==1000);check(GuardianPolicy.retryDelay(6)==30000);
-        check(GuardianPolicy.retryDelay(7)==-1);check(GuardianPolicy.retryDelay(0)==-1);
+        check(GuardianPolicy.retryDelay(7)==60000);check(GuardianPolicy.retryDelay(Integer.MAX_VALUE)==60000);check(GuardianPolicy.retryDelay(0)==-1);
         System.out.println("PASS Guardian hysteresis, unsupported values, maintenance cadence, multicore CPU");
     }
 }

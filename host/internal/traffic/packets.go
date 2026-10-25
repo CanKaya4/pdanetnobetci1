@@ -10,6 +10,7 @@ import (
 	"errors"
 	"math"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -70,6 +71,7 @@ type packetHost struct {
 	bytes           int
 }
 type PacketQueue struct {
+	pending              atomic.Int64
 	m                    *Manager
 	down                 bool
 	mu                   sync.Mutex
@@ -101,6 +103,7 @@ func (q *PacketQueue) Close() {
 		close(q.stop)
 		q.mu.Lock()
 		q.m.packetPending.Add(int64(-q.packets))
+		q.pending.Store(0)
 		clear(q.hosts)
 		q.bytes = 0
 		q.packets = 0
@@ -186,6 +189,7 @@ func (q *PacketQueue) Enqueue(b []byte) bool {
 	q.bytes += len(b)
 	q.packets++
 	q.m.packetPending.Add(1)
+	q.pending.Add(1)
 	if q.packets > packetLimit || q.bytes > byteLimit {
 		var largest *packetHost
 		var fat *packetFlow
@@ -230,6 +234,7 @@ func (q *PacketQueue) remove(h *packetHost, f *packetFlow) ipPacket {
 	q.bytes -= len(p.data)
 	q.packets--
 	q.m.packetPending.Add(-1)
+	q.pending.Add(-1)
 	return p
 }
 func (q *PacketQueue) selectFlow() (*packetHost, *packetFlow) {

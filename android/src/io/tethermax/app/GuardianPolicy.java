@@ -21,6 +21,6 @@ public final class GuardianPolicy {
         return cpuDelta < 0 || elapsedDelta <= 0 ? Double.NaN : cpuDelta * 100.0 / elapsedDelta;
     }
     public static long retryDelay(int failure) {
-        return failure<1||failure>6 ? -1 : Math.min(30000L,1000L << (failure-1));
+        return failure<1 ? -1 : failure>6 ? 60000L : Math.min(30000L,1000L << (failure-1));
     }
 }

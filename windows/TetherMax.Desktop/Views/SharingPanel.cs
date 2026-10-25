@@ -9,6 +9,9 @@ using System.Windows.Media;
 using System.Windows.Threading;
 namespace TetherMax;
 internal sealed class SharingPanel : StackPanel {
+ public string StatusText=>status.Text;
+ public async Task ToggleFromTray(){if(hotspot!=null||recoveryPending)await Stop();else await Start();}
+ public async Task StopForExit(){await Stop();if(recoveryPending||changing)throw new IOException("Hotspot kurtarması tamamlanmadı; yeniden deneyin.");}
  readonly Func<SystemNetwork?> network;
  readonly TextBox ssid=new(){Text="TetherMax",MaxLength=32};
  readonly ComboBox band=new(){ItemsSource=new[]{"Otomatik","2,4 GHz · TV ve eski cihazlar","5 GHz · destekleyen cihazlar"},SelectedIndex=1};
@@ -25,7 +28,7 @@ internal sealed class SharingPanel : StackPanel {
  static void Input(Control c){c.Margin=new Thickness(0,0,0,16);c.Padding=new Thickness(12);c.FontSize=16;c.Background=UiTheme.Background;c.Foreground=UiTheme.Ink;c.BorderBrush=UiTheme.Muted;c.BorderThickness=new Thickness(1);}
  public SharingPanel(Func<SystemNetwork?> network,Func<string,Task>? applyDns=null,Func<TrafficSettings>? currentSettings=null){
   this.network=network;Margin=new Thickness(28);Children.Add(Text("Wi-Fi Hotspot",30));Children.Add(Text("USB internetinizi telefon, TV ve diğer cihazlarla paylaşın.",14));
-  var state=new StackPanel();state.Children.Add(status);state.Children.Add(source);state.Children.Add(acceptance);Children.Add(Card(state));
+  var state=new StackPanel();state.Children.Add(new RomanceScene{Mood="hotspot"});state.Children.Add(status);state.Children.Add(source);state.Children.Add(acceptance);Children.Add(Card(state));
   var settings=new StackPanel();settings.Children.Add(Text("Ağ ayarları",20));settings.Children.Add(Text("Wi-Fi ağ adı",13));Input(ssid);settings.Children.Add(ssid);settings.Children.Add(Text("WPA2 parolası · en az 8 karakter",13));Input(password);settings.Children.Add(password);settings.Children.Add(Text("Yayın bandı",13));Input(band);settings.Children.Add(band);settings.Children.Add(Text("TV için 2,4 GHz seçin. Desteklenmeyen bantta yayın başlatılmaz.",13));
   password.Password=Convert.ToHexString(RandomNumberGenerator.GetBytes(6));
   try{var saved=HotspotPreferences.Read();if(saved!=null){ssid.Text=saved.Ssid;band.SelectedIndex=saved.Band;password.Password=saved.Password;}}catch(Exception e)when(e is IOException or UnauthorizedAccessException or System.Security.Cryptography.CryptographicException or FormatException or JsonException){status.Text="Kayıtlı ağ ayarı açılamadı; ağ adı ve parolayı yeniden girin.";}
@@ -51,7 +54,7 @@ internal sealed class SharingPanel : StackPanel {
   source.Text=active?"Kaynak: doğrulanmış TetherMax USB / Wintun":"Önce ana ekrandan TetherMax bağlantısını kurun.";
   if(hotspot==null&&!changing&&lastActive!=active)status.Text=active?"Hotspot başlatılmaya hazır":"USB bağlantısı bekleniyor";
   lastActive=active;
-  if(!active&&hotspot!=null&&!changing){await Stop();status.Text="USB bağlantısı kapandı · hotspot durduruldu";}
+  if(SessionLifecycle.ShouldStopHotspot(active,hotspot!=null,changing,recoveryPending)){await Stop(true);if(!recoveryPending)status.Text="USB bağlantısı kapandı · hotspot durduruldu";}
   else if(hotspot?.Failure is string error)status.Text=error;
   else if(hotspot?.ClientError is string clientError)status.Text="İstemci bağlantısı: "+clientError;
   var peers=active&&hotspot!=null?n!.SharingClients:Array.Empty<SystemNetwork.HotspotClient>();
@@ -69,21 +72,23 @@ internal sealed class SharingPanel : StackPanel {
  }
  async Task Start(){
   if(changing||hotspot!=null)return;if(network()?.Active!=true){status.Text="Önce USB bağlantısını kurun.";return;}
-  changing=true;bool shareAttempted=false;ssid.IsEnabled=password.IsEnabled=band.IsEnabled=false;start.IsEnabled=false;
+  changing=true;ssid.IsEnabled=password.IsEnabled=band.IsEnabled=false;start.IsEnabled=false;
   try{
-   session=network()!.SessionFolder;status.Text="Wi-Fi ağı oluşturuluyor…";hotspot=new(Dispatcher);shareAttempted=true;await hotspot.Start(ssid.Text,password.Password,band.SelectedIndex,session!);
+   session=network()!.SessionFolder;status.Text="Wi-Fi ağı oluşturuluyor…";hotspot=new(Dispatcher);await hotspot.Start(ssid.Text,password.Password,band.SelectedIndex,session!);
    try{HotspotPreferences.Save(ssid.Text,password.Password,band.SelectedIndex);}catch(Exception e)when(e is IOException or UnauthorizedAccessException or System.Security.Cryptography.CryptographicException){acceptance.Text="Hotspot açık; sonraki açılış için parola kaydedilemedi.";}
    status.Text="Wi-Fi açık · "+(band.SelectedIndex==1?"2,4 GHz":band.SelectedIndex==2?"5 GHz":"Otomatik bant")+" · istemci internet kontrolü bekleniyor";
    try{portal=new(IPAddress.Parse("192.168.137.1"));acceptance.Text="Bağlı cihazda http://192.168.137.1 adresini açın.";}
    catch(System.Net.Sockets.SocketException){acceptance.Text="Yerel kontrol sayfası açılamadı (80 numaralı port kullanımda olabilir). Bağlı cihazda HTTPS / YouTube testi yapın.";}
   }catch(Exception e){
    status.Text=e.Message+" · 0x"+e.HResult.ToString("X8");
-   if(hotspot!=null){try{if(shareAttempted)await Share(false);}catch(Exception cleanup){recoveryPending=true;status.Text+=" · Paylaşım kurtarması: "+cleanup.Message;}hotspot.Dispose();hotspot=null;}
+   // The native helper rolls back its own failed start. Do not open another
+   // elevation prompt when the original request failed or was cancelled.
+   if(hotspot!=null){hotspot.Dispose();hotspot=null;}
   }finally{changing=false;ssid.IsEnabled=password.IsEnabled=band.IsEnabled=hotspot==null;await Tick();}
  }
- async Task Stop(){
+ async Task Stop(bool automatic=false){
   if(changing||(hotspot==null&&!recoveryPending))return;changing=true;end.IsEnabled=false;
-  try{await Share(false);if(portal!=null){await portal.DisposeAsync();portal=null;}hotspot?.Dispose();hotspot=null;session=null;recoveryPending=false;status.Text="Hotspot durduruldu";acceptance.Text="İstemci interneti henüz doğrulanmadı";}
+  try{if(automatic){if(network() is SystemNetwork owner)await owner.DisposeAsync();}else await Share(false);if(portal!=null){await portal.DisposeAsync();portal=null;}hotspot?.Dispose();hotspot=null;session=null;recoveryPending=false;status.Text="Hotspot durduruldu";acceptance.Text="İstemci interneti henüz doğrulanmadı";}
   catch(Exception e){recoveryPending=true;status.Text="Durdurma/kurtarma tamamlanmadı: "+e.Message;}
   finally{changing=false;ssid.IsEnabled=password.IsEnabled=band.IsEnabled=hotspot==null;}
  }

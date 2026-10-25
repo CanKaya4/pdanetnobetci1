@@ -14,19 +14,25 @@ namespace TetherMax;
 internal sealed partial class Dashboard : Window
 {
     readonly ComboBox devices = new() { MinWidth=260,Margin=new Thickness(0,12,0,12) };
-    readonly TextBlock state = new() { Text="Bağlantı kapalı",FontSize=24,Foreground=UiTheme.Ink,Margin=new Thickness(0,10,0,10) };
+    readonly TextBlock state = new() { Text="Bağlantı kapalı",TextWrapping=TextWrapping.Wrap,FontSize=24,Foreground=UiTheme.Ink,Margin=new Thickness(0,10,0,10) };
     readonly TextBox log = new() { IsReadOnly=true,AcceptsReturn=true,TextWrapping=TextWrapping.Wrap,VerticalScrollBarVisibility=ScrollBarVisibility.Auto,Height=220,Background=UiTheme.Background,Foreground=UiTheme.Muted,BorderThickness=new Thickness(0) };
-    readonly CheckBox reconnect = new() { Content="USB yeniden geldiğinde bağlan",Foreground=UiTheme.Ink,Margin=new Thickness(0,12,0,12) };
+    readonly CheckBox reconnect = new() { Content="USB yeniden geldiğinde bağlantı için bildir",Foreground=UiTheme.Ink,Margin=new Thickness(0,12,0,12) };
     readonly TrafficPanel trafficPanel=new();
     readonly SemaphoreSlim operations=new(1,1);
     readonly ConnectionViewModel connection=new();
-    bool connecting,authorizationRequired,userCanceled;
+    bool connecting,authorizationRequired,userCanceled,polling;
+    bool exitRequested,hideNoticeSeen,allowClose;
+    readonly RomanceScene mascot=new();
+    readonly LiveTrafficChart homeChart=new();
+    readonly DispatcherTimer visualClock=new(){Interval=TimeSpan.FromSeconds(1)};
+    SharingPanel sharing=null!;
     TaskCompletionSource<bool>? refreshFinished;
     Button? connectControl,disconnectControl,cancelControl;
     void UpdateControls(){bool active=connection.Phase==ConnectionPhase.Connected&&systemNetwork?.Active==true;bool pending=connecting||connection.Phase is ConnectionPhase.DetectingPhone or ConnectionPhase.PhoneDetected or ConnectionPhase.CheckingAuthorization or ConnectionPhase.PreparingAndroid or ConnectionPhase.Authenticating or ConnectionPhase.OpeningTransport or ConnectionPhase.StartingEngine or ConnectionPhase.AwaitingConsent or ConnectionPhase.ConfiguringWindows or ConnectionPhase.CheckingInternet;if(connectControl!=null){connectControl.Visibility=active?Visibility.Collapsed:Visibility.Visible;connectControl.IsEnabled=!pending;}if(disconnectControl!=null)disconnectControl.Visibility=active?Visibility.Visible:Visibility.Collapsed;if(cancelControl!=null)cancelControl.Visibility=pending?Visibility.Visible:Visibility.Collapsed;}
     DateTime? connectedAt;
     readonly TextBlock sessionDetails=new(){FontSize=13,Foreground=UiTheme.Muted,Margin=new Thickness(0,10,0,0),TextWrapping=TextWrapping.Wrap};
     readonly CellularAvailability cellularAvailability=new();
+    readonly UsbAvailability usbAvailability=new();
     TaskCompletionSource<bool>? profileApplied;TrafficSettings? pendingProfile; int reconnectAttempts;
     void Stage(string label) { connection.Status=label; state.Text=label; Note("Aşama · "+label);UpdateControls(); }
     void Phase(ConnectionPhase phase,string label) { connection.Advance(phase,label);Stage(label); }
@@ -47,23 +53,26 @@ internal sealed partial class Dashboard : Window
         }catch{}return false; }
     }
     readonly DispatcherTimer timer = new() { Interval=TimeSpan.FromSeconds(5) };
-    readonly string adb = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),"Android","Sdk","platform-tools","adb.exe");
+    readonly string adb = File.Exists(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),"Android","Sdk","platform-tools","adb.exe"))?Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),"Android","Sdk","platform-tools","adb.exe"):Path.Combine(AppContext.BaseDirectory,"platform-tools","adb.exe");
     readonly string root = AppContext.BaseDirectory;
     static readonly string SettingsPath=Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),"TetherMax","preferences.json");
     string EnginePath => Path.Combine(root,"tethermax-engine.exe");
-    public Dashboard(bool preview=false,bool manualStart=false)
+    public Dashboard(bool preview=false,bool manualStart=false,bool lifecycleTest=false,bool connectOnce=false)
     {
-        InitializeComponent(); DataContext=connection; SharingHost.Content=new SharingPanel(()=>systemNetwork,trafficPanel.SelectDns,()=>trafficPanel.Settings);
-        Title="TetherMax 1.0 RC · USB bağlantısı"; Width=960;Height=900;MinWidth=760;MinHeight=650;
+        InitializeComponent(); DataContext=connection; sharing=new SharingPanel(()=>systemNetwork,trafficPanel.SelectDns,()=>trafficPanel.Settings);SharingHost.Content=sharing;
+        Title="TetherMax · Studio Edition · RC10"; Width=1120;Height=880;MinWidth=760;MinHeight=650;
         Background=UiTheme.Background;
         var panel=new StackPanel { Margin=new Thickness(28) }; HomeHost.Content=panel;
-        var brand=new StackPanel{Orientation=Orientation.Horizontal};brand.Children.Add(new System.Windows.Controls.Image{Source=BrandLogo.Load(),Width=52,Height=52,Margin=new Thickness(0,0,14,0)});brand.Children.Add(new TextBlock{Text="TetherMax",FontSize=36,FontWeight=FontWeights.Bold,Foreground=UiTheme.Ink});panel.Children.Add(brand);
-        panel.Children.Add(new TextBlock{Text="USB üzerinden sistem geneli internet · Güvenli eşleştirme",Foreground=UiTheme.Accent,Margin=new Thickness(0,4,0,12)});
+        panel.Children.Add(new TextBlock{Text="BAĞLANTININ EN GÜZEL HALİ",FontSize=10,FontWeight=FontWeights.SemiBold,Foreground=UiTheme.Accent,Margin=new Thickness(0,0,0,8)});
+        panel.Children.Add(new TextBlock{Text="İyi ki bağlıyız.",FontSize=32,FontWeight=FontWeights.SemiBold,Foreground=UiTheme.Ink});
+        panel.Children.Add(new TextBlock{Text="Telefonun, bilgisayarın ve sen. Tek bir güzel bağlantı.",FontSize=13,Foreground=UiTheme.Muted,Margin=new Thickness(0,8,0,12),TextWrapping=TextWrapping.Wrap});
         var hero=new Border{Background=UiTheme.Surface,CornerRadius=new CornerRadius(24),Padding=new Thickness(24),Margin=new Thickness(0,12,0,20)};
-        var heroContent=new StackPanel();hero.Child=heroContent;heroContent.Children.Add(state);heroContent.Children.Add(sessionDetails);panel.Children.Add(hero);
+        var heroGrid=new Grid();heroGrid.ColumnDefinitions.Add(new ColumnDefinition{Width=new GridLength(1,GridUnitType.Star)});heroGrid.ColumnDefinitions.Add(new ColumnDefinition{Width=new GridLength(0.85,GridUnitType.Star)});hero.Child=heroGrid;
+        var heroContent=new StackPanel{VerticalAlignment=VerticalAlignment.Center};heroGrid.Children.Add(heroContent);mascot.MinWidth=0;mascot.Height=180;Grid.SetColumn(mascot,1);heroGrid.Children.Add(mascot);
+        hero.SizeChanged+=(_,_)=>{bool compact=hero.ActualWidth<450;mascot.Visibility=compact?Visibility.Collapsed:Visibility.Visible;heroGrid.ColumnDefinitions[1].Width=compact?new GridLength(0):new GridLength(0.85,GridUnitType.Star);};heroContent.Children.Add(new TextBlock{Text="BAĞLANTI DURUMU",FontSize=11,FontWeight=FontWeights.SemiBold,Foreground=UiTheme.Accent,Margin=new Thickness(0,12,0,0)});heroContent.Children.Add(state);heroContent.Children.Add(sessionDetails);panel.Children.Add(hero);
         DevicesHost.Children.Add(new TextBlock{Text="Güvenilen USB telefonu",FontSize=28});DevicesHost.Children.Add(devices);
         heroContent.Children.Add(new TextBlock{Text="USB · Güvenli eşleştirme · Hücresel veri yolu",Foreground=UiTheme.Accent,TextWrapping=TextWrapping.Wrap});
-        var summary=new MetricsDashboard();panel.Children.Add(summary);trafficPanel.MetricsReset=summary.Clear;trafficPanel.MetricsUpdated=data=>{summary.Accept(data);if(pendingProfile!=null&&pendingProfile.Acknowledged(data))profileApplied?.TrySetResult(true);};
+        var summary=new MetricsDashboard();panel.Children.Add(summary);panel.Children.Add(new Border{Background=UiTheme.Surface,CornerRadius=new CornerRadius(20),Padding=new Thickness(20),Margin=new Thickness(0,0,0,16),Child=homeChart});trafficPanel.MetricsReset=()=>{summary.Clear();homeChart.Clear();};trafficPanel.MetricsUpdated=data=>{summary.Accept(data);homeChart.Accept(data);if(pendingProfile!=null&&pendingProfile.Acknowledged(data))profileApplied?.TrySetResult(true);};
         var modeFeedback=new TextBlock{Foreground=UiTheme.Accent,TextWrapping=TextWrapping.Wrap,Margin=new Thickness(0,0,0,18)};ModesHost.Children.Add(modeFeedback);
         var modeChoices=new List<(string Id,Button Button)>();
         trafficPanel.StatusChanged+=()=>{modeFeedback.Text=trafficPanel.StatusText;foreach(var item in modeChoices){item.Button.IsEnabled=!trafficPanel.IsApplying;item.Button.Content=item.Id==trafficPanel.Settings.Mode?"✓ Seçili":"Profili seç";}};
@@ -71,11 +80,12 @@ internal sealed partial class Dashboard : Window
             var box=new Border{CornerRadius=new CornerRadius(16),Background=UiTheme.Surface,Padding=new Thickness(20),Margin=new Thickness(0,0,0,14)};
             var row=new StackPanel();box.Child=row;row.Children.Add(new TextBlock{Text=mode.Item2,FontSize=22});row.Children.Add(new TextBlock{Text=mode.Item3,Margin=new Thickness(0,8,0,12)});var select=Button(row,"Profili seç",async()=>await trafficPanel.SelectMode(mode.Item1));modeChoices.Add((mode.Item1,select));ModesHost.Children.Add(box);
         }
-        var actions=new WrapPanel();panel.Children.Add(actions);
+        var actions=new WrapPanel{Margin=new Thickness(0,16,0,0)};heroContent.Children.Add(actions);
         var diagnostics=new WrapPanel(); DiagnosticsHost.Content=new StackPanel(); ((StackPanel)DiagnosticsHost.Content).Children.Add(diagnostics);
         Button(DevicesHost,"Telefonları yenile",async()=>await Refresh());
         cancelControl=Button(actions,"İptal",async()=>{userCanceled=true;session?.Cancel();await Disconnect();});
         connectControl=Button(actions,"Bağlan",async()=>await ConnectSystemNetwork(false)); disconnectControl=Button(actions,"Bağlantıyı kes",async()=>{reconnect.IsChecked=false;await Disconnect();});
+        connectControl.Background=new SolidColorBrush(Color.FromRgb(101,85,203));connectControl.Foreground=Brushes.White;disconnectControl.Background=new SolidColorBrush(Color.FromRgb(172,70,100));disconnectControl.Foreground=Brushes.White;
         foreach(var control in new[]{connectControl,disconnectControl}){control.FontSize=18;control.MinWidth=190;control.Padding=new Thickness(24,16,24,16);}UpdateControls();
         Button(diagnostics,"İnternet testi",async()=>await Diagnose());
         Button(diagnostics,"IP motoru testi",async()=>await DiagnoseIP());
@@ -91,40 +101,122 @@ internal sealed partial class Dashboard : Window
         Button(diagnostics,"Eşleştirmeyi unut",async()=>{await Disconnect();if(devices.SelectedItem is Device d){Pairing.Forget(d.Serial);Note("Windows eşleştirmesi silindi. Telefonda da Güvenilen bilgisayarları unut seçeneğini kullanın.");}});
         panel.Children.Add(reconnect);
         var startup=new CheckBox{Content="Windows açılışında TetherMax’i aç",Foreground=UiTheme.Ink,Margin=new Thickness(0,4,0,12)};
-        using(var key=Microsoft.Win32.Registry.CurrentUser.OpenSubKey(@"Software\Microsoft\Windows\CurrentVersion\Run"))startup.IsChecked=key?.GetValue("TetherMax") is string;
-        startup.Checked+=(_,_)=>{using var key=Microsoft.Win32.Registry.CurrentUser.CreateSubKey(@"Software\Microsoft\Windows\CurrentVersion\Run");key.SetValue("TetherMax","\""+Environment.ProcessPath+"\"");};
-        startup.Unchecked+=(_,_)=>{using var key=Microsoft.Win32.Registry.CurrentUser.OpenSubKey(@"Software\Microsoft\Windows\CurrentVersion\Run",true);key?.DeleteValue("TetherMax",false);};
+        if(!preview)try{using var key=Microsoft.Win32.Registry.CurrentUser.OpenSubKey(@"Software\Microsoft\Windows\CurrentVersion\Run");startup.IsChecked=key?.GetValue("TetherMax") is string;}
+        catch(Exception error)when(error is System.Security.SecurityException or UnauthorizedAccessException or IOException){startup.IsEnabled=false;Note("Windows başlangıç tercihi okunamadı: "+error.Message);}
+        startup.Checked+=(_,_)=>SetStartup(true);
+        startup.Unchecked+=(_,_)=>SetStartup(false);
         SettingsHost.Content=new StackPanel(); ((StackPanel)SettingsHost.Content).Children.Add(startup);
-        var help=new TextBlock{Foreground=UiTheme.Muted,TextWrapping=TextWrapping.Wrap,Text="Telefon: TetherMax → Hücresel motoru başlat. Windows: Bağlan → UAC onayı. Simge durumuna küçültünce sistem tepsisinde çalışır. Mevcut tek interneti sağlayan USB tethering’i güvenli alternatif olmadan kapatmayın. Kota bağımsızlığı doğrulanmadı."};((StackPanel)SettingsHost.Content).Children.Add(help);
+        var help=new TextBlock{Foreground=UiTheme.Muted,TextWrapping=TextWrapping.Wrap,Text="Telefon: TetherMax → Hücresel motoru başlat. Windows: Bağlan → UAC onayı. X veya simge durumuna küçültme ile sistem tepsisinde çalışır. Mevcut tek interneti sağlayan USB tethering’i güvenli alternatif olmadan kapatmayın. Kota bağımsızlığı doğrulanmadı."};((StackPanel)SettingsHost.Content).Children.Add(help);
         var trayMenu=new System.Windows.Forms.ContextMenuStrip();
-        trayMenu.Items.Add("Göster",null,(_,_)=>Dispatcher.Invoke(()=>{Show();WindowState=WindowState.Normal;Activate();}));
-        trayMenu.Items.Add("Bağlan",null,(_,_)=>Dispatcher.BeginInvoke(async()=>{try{await ConnectSystemNetwork(false);}catch(Exception e){Note(e.Message);}}));
-        trayMenu.Items.Add("Bağlantıyı kes",null,(_,_)=>Dispatcher.BeginInvoke(async()=>{reconnect.IsChecked=false;await Disconnect();}));
-        trayMenu.Items.Add("Çıkış",null,(_,_)=>Dispatcher.Invoke(()=>Close()));
-        tray=new System.Windows.Forms.NotifyIcon{Text="TetherMax USB internet",Icon=new System.Drawing.Icon(Path.Combine(root,"Assets","tethermax.ico")),Visible=!preview,ContextMenuStrip=trayMenu};
-        tray.DoubleClick+=(_,_)=>Dispatcher.Invoke(()=>{Show();WindowState=WindowState.Normal;Activate();});
-        StateChanged+=(_,_)=>{if(WindowState==WindowState.Minimized)Hide();};Closed+=(_,_)=>tray.Dispose();
+        void Open(int page=0){if(closing||allowClose)return;Show();WindowState=WindowState.Normal;Navigation.SelectedIndex=page;Activate();}
+        trayMenu.Items.Add("TetherMax'ı Aç",null,(_,_)=>Dispatcher.Invoke(()=>Open()));
+        var connectionItem=trayMenu.Items.Add("Bağlantı Durumu");var hotspotItem=trayMenu.Items.Add("Hotspot Durumu");
+        var toggle=trayMenu.Items.Add("Bağlan / Bağlantıyı Kes",null,(_,_)=>Dispatcher.BeginInvoke(async()=>{try{if(systemNetwork?.Active==true||engine!=null){reconnect.IsChecked=false;await Disconnect();}else await ConnectSystemNetwork(false);}catch(Exception e){Note(e.Message);}}));
+        trayMenu.Items.Add("Hotspot Aç / Kapat",null,(_,_)=>Dispatcher.BeginInvoke(async()=>{try{await sharing.ToggleFromTray();}catch(Exception error){Diagnostics.Record("tray-hotspot",error);Note("Paylaşım işlemi tamamlanamadı: "+error.Message);}}));
+        trayMenu.Items.Add("Ayarlar",null,(_,_)=>Dispatcher.Invoke(()=>Open(6)));
+        trayMenu.Items.Add(new System.Windows.Forms.ToolStripSeparator());
+        trayMenu.Items.Add("Çıkış",null,(_,_)=>Dispatcher.Invoke(()=>{if(closing)return;if(MessageBox.Show(this,"TetherMax kapatılacak. Etkin USB interneti ve hotspot bağlantıları kesilebilir. Çıkılsın mı?","Güvenli çıkış",MessageBoxButton.OKCancel,MessageBoxImage.Question)!=MessageBoxResult.OK){RequestExit(false);return;}RequestExit(true);}));
+        trayMenu.Opening+=(_,_)=>{connectionItem.Text="Bağlantı · "+state.Text;hotspotItem.Text="Hotspot · "+sharing.StatusText;toggle.Enabled=!connecting&&!closing;};
+        tray=new System.Windows.Forms.NotifyIcon{Text="TetherMax · Romantic Edition",Icon=new System.Drawing.Icon(Path.Combine(root,"Assets","tethermax.ico")),Visible=!preview,ContextMenuStrip=trayMenu};
+        tray.DoubleClick+=(_,_)=>Dispatcher.Invoke(()=>Open());
+        StateChanged+=(_,_)=>{if(WindowState==WindowState.Minimized)Hide();};
+        Closed+=(_,_)=>{visualClock.Stop();timer.Stop();tray.Visible=false;tray.Dispose();trayMenu.Dispose();};
         try {
-            if(!preview&&File.Exists(SettingsPath)) { var saved=System.Text.Json.JsonSerializer.Deserialize<Preferences>(File.ReadAllText(SettingsPath));UiTheme.SetLight(saved?.LightTheme==true);selectedSerial=saved?.Serial;reconnect.IsChecked=saved?.Reconnect==true;trafficPanel.Load(saved?.Traffic??new()); }
+            if(!preview) { var saved=SettingsFile.Read<Preferences>(SettingsPath);UiTheme.Motion=saved?.Motion??1;UiTheme.Transparency=saved?.Transparency??true;hideNoticeSeen=saved?.HideNoticeSeen??false;UiTheme.SetLight(saved?.LightTheme??true);selectedSerial=saved?.Serial;reconnect.IsChecked=saved?.Reconnect==true;trafficPanel.Load(saved?.Traffic??new()); }
         } catch { Note("Tercihler okunamadı; otomatik bağlantı kapalı tutuldu."); }
-        var light=new CheckBox{Content="Açık tema",IsChecked=UiTheme.Light,Foreground=UiTheme.Ink,Margin=new Thickness(0,16,0,16)};((StackPanel)SettingsHost.Content).Children.Add(light);light.Checked+=(_,_)=>{UiTheme.SetLight(true);SavePreferences();};light.Unchecked+=(_,_)=>{UiTheme.SetLight(false);SavePreferences();};
+        var light=new CheckBox{Content="Daylight · açık tema (kapalı: After Hours)",IsChecked=UiTheme.Light,Foreground=UiTheme.Ink,Margin=new Thickness(0,16,0,16)};((StackPanel)SettingsHost.Content).Children.Add(light);light.Checked+=(_,_)=>{UiTheme.SetLight(true);SavePreferences();};light.Unchecked+=(_,_)=>{UiTheme.SetLight(false);SavePreferences();};
+        var motion=new ComboBox{ItemsSource=new[]{"Animasyonlar · Kapalı","Animasyonlar · Az","Animasyonlar · Tam"},SelectedIndex=UiTheme.Motion,Margin=new Thickness(0,0,0,16)};
+        motion.SelectionChanged+=(_,_)=>{UiTheme.Motion=motion.SelectedIndex;SavePreferences();};((StackPanel)SettingsHost.Content).Children.Add(motion);
+        var glass=new CheckBox{Content="Saydam kart yüzeyleri",IsChecked=UiTheme.Transparency,Margin=new Thickness(0,0,0,16)};
+        glass.Click+=(_,_)=>{UiTheme.Transparency=glass.IsChecked==true;UiTheme.SetLight(UiTheme.Light);SavePreferences();};((StackPanel)SettingsHost.Content).Children.Add(glass);
+        var notice=new CheckBox{Content="Tepsiye gizleme bilgisini tekrar gösterme",IsChecked=hideNoticeSeen};notice.Click+=(_,_)=>{hideNoticeSeen=notice.IsChecked==true;SavePreferences();};((StackPanel)SettingsHost.Content).Children.Add(notice);
+        visualClock.Tick+=(_,_)=>{if(!IsVisible)return;mascot.Mood=connecting?"connecting":connectedAt.HasValue?"connected":connection.Phase==ConnectionPhase.Idle?"idle":"error";mascot.InvalidateVisual();if(connectedAt.HasValue){var elapsed=DateTime.UtcNow-connectedAt.Value;sessionDetails.Text=((devices.SelectedItem as Device)?.Model??"Telefon")+" · USB · "+$"{(int)elapsed.TotalHours:00}:{elapsed.Minutes:00}:{elapsed.Seconds:00}";}};
+        if(!preview)visualClock.Start();
         reconnect.Checked+=(_,_)=>SavePreferences();reconnect.Unchecked+=(_,_)=>SavePreferences();
         ((StackPanel)DiagnosticsHost.Content).Children.Add(new TextBlock{Text="Bağlan: Windows IPv4 internetini USB üzerinden aktarır. IPv6 kaçak koruması etkin. Günlük modda uygulama süre/veri sınırı yoktur.",Foreground=UiTheme.Muted,TextWrapping=TextWrapping.Wrap,Margin=new Thickness(0,12,0,20)});
         trafficPanel.ApplySettings=async settings=>{if(systemNetwork?.Active==true)await ApplyLiveProfile(settings);else if(engine!=null&&!engine.HasExited){await engine.StandardInput.WriteLineAsync(JsonSerializer.Serialize(settings));await engine.StandardInput.FlushAsync();}SavePreferences(settings);};
         AnalysisHost.Content=trafficPanel;
         ((StackPanel)DiagnosticsHost.Content).Children.Add(new TextBlock{Text="Standart USB tethering kapatma işlemi yalnızca doğrulanmış bağlantı ve güvenli geri dönüşle yapılmalı. Profil değişikliği canlı telemetriyle doğrulanır; hız tavanı ve adaptif ayar sonraki bağlantıda uygulanır. MyPublicWiFi/ICS otomatik yapılandırılmaz.",Foreground=UiTheme.Muted,TextWrapping=TextWrapping.Wrap,Margin=new Thickness(0,0,0,16)});
         ((StackPanel)DiagnosticsHost.Content).Children.Add(log);
-        Loaded+=async(_,_)=>{if(preview)return;wantsDaily=!manualStart&&DailyReady&&reconnect.IsChecked==true;await Refresh();timer.Start();};
-        timer.Tick+=async(_,_)=>{if(busy||connecting||refreshing||closing)return;sessionDetails.Text=((devices.SelectedItem as Device)?.Model??"Telefon bekleniyor")+" · USB · Profil: "+trafficPanel.Settings.Mode+(connectedAt.HasValue?" · Süre: "+(DateTime.UtcNow-connectedAt.Value).ToString(@"hh\:mm\:ss"):"");await Refresh();if(engine?.HasExited==true){Note("Motor durdu.");await Disconnect();}if(wantsDaily&&reconnect.IsChecked==true&&DateTime.UtcNow>=nextReconnect&&engine==null&&systemNetwork==null&&selectedSerial!=null&&devices.Items.Cast<Device>().Any(d=>d.Serial==selectedSerial))await ConnectSystemNetwork(false,true);};
-        Closing+=async(_,e)=>{if(preview||closing)return;e.Cancel=true;closing=true;timer.Stop();try{await Disconnect();Close();}catch(Exception error){closing=false;timer.Start();Note("Kapanış kurtarması: "+error.Message);}};
+        Loaded+=async(_,_)=>{if(preview)return;bool initialRequest=connectOnce;connectOnce=false;wantsDaily=false;await Refresh();timer.Start();if(initialRequest)await ConnectSystemNetwork(false);};
+        timer.Tick+=async(_,_)=>await PollConnection();
+        Closing+=(_,e)=>{
+            if(preview&&!lifecycleTest||allowClose)return;
+            e.Cancel=true;if(closing)return;
+            if(!exitRequested){Hide();if(!preview&&!hideNoticeSeen){tray.ShowBalloonTip(4000,"TetherMax","TetherMax arka planda çalışmaya devam ediyor 💗",System.Windows.Forms.ToolTipIcon.Info);hideNoticeSeen=true;SavePreferences();}return;}
+            closing=true;timer.Stop();visualClock.Stop();
+            _=CompleteExit();
+        };
+        Navigation.SelectionChanged+=(_,e)=>{if(e.Source!=Navigation||!UiTheme.Animate)return;if(Navigation.SelectedContent is FrameworkElement page){page.BeginAnimation(OpacityProperty,new System.Windows.Media.Animation.DoubleAnimation(0.3,1,TimeSpan.FromMilliseconds(180)));}};
+        if(!preview)Loaded+=(_,_)=>{Note("RC10 · Ayar dosyası: "+SettingsPath);ShowWelcome();};
+    }
+    internal Func<Task>? ExitCleanupForTest;
+    internal void ActivateExisting(){if(closing||allowClose||Dispatcher.HasShutdownStarted)return;Show();if(WindowState==WindowState.Minimized)WindowState=WindowState.Normal;Activate();}
+    void SetStartup(bool enabled) {
+        try{using var key=Microsoft.Win32.Registry.CurrentUser.CreateSubKey(@"Software\Microsoft\Windows\CurrentVersion\Run");if(enabled)key.SetValue("TetherMax","\""+Environment.ProcessPath+"\"");else key.DeleteValue("TetherMax",false);}
+        catch(Exception error)when(error is System.Security.SecurityException or UnauthorizedAccessException or IOException){Diagnostics.Record("startup-setting",error);Note("Windows başlangıç tercihi değiştirilemedi.");}
+    }
+    async Task CompleteExit() {
+        // Always leave the synchronous Closing event, even when cleanup fails
+        // before its first await. WPF forbids Show/Close while that event runs.
+        await Task.Yield();
+        try {
+            if(ExitCleanupForTest!=null)await ExitCleanupForTest();else {await sharing.StopForExit();await Disconnect();}
+            allowClose=true;Close();
+        }catch(Exception error){Diagnostics.Record("exit-cleanup",error);closing=false;exitRequested=false;timer.Start();visualClock.Start();Show();Note("Güvenli çıkış tamamlanamadı: "+error.Message);}
+    }
+    async Task PollConnection()
+    {
+        if(polling||busy||connecting||refreshing||closing)return;
+        polling=true;
+        try {
+            await Refresh();
+            if(engine?.HasExited==true){Note("Motor durdu.");await Disconnect(true);}
+            if(wantsDaily&&reconnect.IsChecked==true&&DateTime.UtcNow>=nextReconnect&&engine==null&&systemNetwork==null&&selectedSerial!=null&&devices.Items.Cast<Device>().Any(d=>d.Serial==selectedSerial)){
+                wantsDaily=false;
+                Stage("USB hazır · yeniden bağlanmak için Bağlan seçin");
+                tray?.ShowBalloonTip(4000,"TetherMax","USB hazır. Bağlan düğmesiyle bağlantıyı yeniden başlatabilirsiniz.",System.Windows.Forms.ToolTipIcon.Info);
+            }
+        } catch(Exception error){wantsDaily=false;Phase(ConnectionPhase.Failed,"Bağlantı denetimi: "+error.Message);}
+        finally{polling=false;}
+    }
+    void RequestExit(bool confirmed){if(!confirmed)return;exitRequested=true;Close();}
+    internal void RunOfflineUiChecks(){
+        RomanceScene.VerifyOfflineRendering();
+        void Require(bool ok,string message){if(!ok)throw new InvalidOperationException(message);}
+        for(int tick=0;tick<100;tick++){wantsDaily=true;ConnectSystemNetwork(false,true).GetAwaiter().GetResult();Require(!wantsDaily&&systemNetwork==null&&engine==null&&!connecting,"automatic retry reached elevation or created a worker");}
+        hideNoticeSeen=true;Show();Close();Require(!IsVisible&&!closing&&!exitRequested,"X must hide without beginning cleanup");
+        Show();WindowState=WindowState.Normal;Require(IsVisible,"same window must reopen");
+        for(int i=0;i<Navigation.Items.Count;i++){Navigation.SelectedIndex=i;UpdateLayout();}
+        foreach(bool light in new[]{true,false,true}){UiTheme.SetLight(light);UpdateLayout();Require(UiTheme.Light==light,"theme switch");}
+        foreach(var size in new[]{new Size(760,650),new Size(1120,850),new Size(1440,1000)}){Width=size.Width;Height=size.Height;UpdateLayout();Require(ActualWidth>=760,"responsive layout");}
+        Require(UiTheme.Bytes(1_500_000)=="1.5 MB"||UiTheme.Bytes(1_500_000)=="1,5 MB","byte units");
+        RequestExit(false);Require(IsVisible&&!exitRequested,"cancel must keep the app running");
+        void PumpUntil(Func<bool> completed){var frame=new DispatcherFrame();int ticks=0;var wait=new DispatcherTimer{Interval=TimeSpan.FromMilliseconds(10)};wait.Tick+=(_,_)=>{if(completed()||++ticks>500){wait.Stop();frame.Continue=false;}};wait.Start();Dispatcher.PushFrame(frame);Require(completed(),"UI lifecycle operation timed out");}
+        ExitCleanupForTest=()=>throw new IOException("injected synchronous cleanup failure");
+        RequestExit(true);Require(closing&&!allowClose,"cleanup ran inside Closing event");PumpUntil(()=>!closing);
+        Require(IsVisible&&!exitRequested&&!allowClose,"failed cleanup did not restore window safely");
+        ExitCleanupForTest=async()=>{await Task.Delay(15);};
+        RequestExit(true);Require(closing&&!allowClose,"confirmed exit must be deferred");PumpUntil(()=>allowClose);
+        Require(!IsVisible,"confirmed exit must close");
+    }
+    void ShowWelcome(){
+        if(!UiTheme.Animate)return;
+        var body=new StackPanel{VerticalAlignment=VerticalAlignment.Center,HorizontalAlignment=HorizontalAlignment.Center};
+        body.Children.Add(new RomanceScene{Width=360,Height=180});body.Children.Add(new TextBlock{Text="TetherMax",FontSize=40,FontWeight=FontWeights.Bold,HorizontalAlignment=HorizontalAlignment.Center});body.Children.Add(new TextBlock{Text="Birlikte, hep bağlı ♡",FontSize=18,HorizontalAlignment=HorizontalAlignment.Center,Margin=new Thickness(0,12,0,24)});
+        var overlay=new Border{Background=UiTheme.Background,Child=body};System.Windows.Controls.Grid.SetColumnSpan(overlay,2);Shell.Children.Add(overlay);
+        var skip=new Button{Content="Atla",Padding=new Thickness(24,12,24,12)};body.Children.Add(skip);
+        var duration=new DispatcherTimer{Interval=TimeSpan.FromMilliseconds(UiTheme.Motion==2?1800:900)};
+        void Dismiss(){duration.Stop();Shell.Children.Remove(overlay);}skip.Click+=(_,_)=>Dismiss();duration.Tick+=(_,_)=>Dismiss();Closed+=(_,_)=>duration.Stop();duration.Start();
+        overlay.BeginAnimation(OpacityProperty,new System.Windows.Media.Animation.DoubleAnimation(0,1,TimeSpan.FromMilliseconds(200)));
     }
     sealed record Device(string Serial,string Model) { public override string ToString()=>Model+" · "+Serial; }
-    sealed record Preferences(string? Serial,bool Reconnect,TrafficSettings? Traffic=null,bool LightTheme=false);
-    void SavePreferences(TrafficSettings? settings=null){try{Directory.CreateDirectory(Path.GetDirectoryName(SettingsPath)!);File.WriteAllText(SettingsPath,System.Text.Json.JsonSerializer.Serialize(new Preferences(selectedSerial,reconnect.IsChecked==true,settings??trafficPanel.Settings,UiTheme.Light)));}catch{Note("Tercihler kaydedilemedi.");}}
+    sealed record Preferences(string? Serial,bool Reconnect,TrafficSettings? Traffic=null,bool LightTheme=true,int Motion=1,bool Transparency=true,bool HideNoticeSeen=false);
+    void SavePreferences(TrafficSettings? settings=null){try{Directory.CreateDirectory(Path.GetDirectoryName(SettingsPath)!);SettingsFile.Write(SettingsPath,new Preferences(selectedSerial,reconnect.IsChecked==true,settings??trafficPanel.Settings,UiTheme.Light,UiTheme.Motion,UiTheme.Transparency,hideNoticeSeen));}catch{Note("Tercihler kaydedilemedi.");}}
     Button Button(Panel parent,string label,Func<Task> handler)
     {
         var button=new Button{Content=label,Padding=new Thickness(16,10,16,10),Margin=new Thickness(0,0,8,8)};
-        button.Click+=async(_,_)=>{try{await handler();}catch(Exception ex){Note(ex.Message);}};parent.Children.Add(button);return button;
+        button.Click+=async(_,_)=>{button.IsEnabled=false;try{await handler();}catch(Exception ex){Note(ex.Message);}finally{button.IsEnabled=true;UpdateControls();}};parent.Children.Add(button);return button;
     }
     void Note(string message){log.AppendText(DateTime.Now.ToString("HH:mm:ss")+"  "+message+Environment.NewLine);if(log.Text.Length>65536)log.Text=log.Text[^49152..];log.ScrollToEnd();}
     async Task AuditNetwork()
@@ -164,6 +256,9 @@ internal sealed partial class Dashboard : Window
     async Task<string> Adb(params string[] arguments)
     {
         if(!File.Exists(adb))throw new IOException("Resmî Android SDK platform-tools bulunamadı. Mevcut ADB kurulumuna müdahale edilmedi.");
+        var server=await AdbServerProbe.Inspect();
+        if(server==AdbServerState.Conflict)throw new IOException("Mevcut ADB sunucusu uyumlu değil veya yanıt vermiyor; sunucu durdurulmadı. Diğer USB uygulamalarını kontrol edin.");
+        if(server==AdbServerState.Missing&&!connecting&&engine==null&&systemNetwork==null)throw new IOException("USB hazırlığı için Bağlan seçin. ADB arka planda otomatik başlatılmadı.");
         var start=new ProcessStartInfo(adb){UseShellExecute=false,CreateNoWindow=true,RedirectStandardOutput=true,RedirectStandardError=true};foreach(var arg in arguments)start.ArgumentList.Add(arg);
         using var p=Process.Start(start)??throw new IOException("ADB başlatılamadı.");
         var stdout=p.StandardOutput.ReadToEndAsync();var stderr=p.StandardError.ReadToEndAsync();
@@ -193,11 +288,20 @@ internal sealed partial class Dashboard : Window
             }
             authorizationRequired=unauthorized&&list.Count==0;
             devices.ItemsSource=list;devices.SelectedItem=list.FirstOrDefault(d=>d.Serial==old)??list.FirstOrDefault();
-            if((engine!=null||systemNetwork!=null)&&!list.Any(d=>d.Serial==selectedSerial)){await Disconnect(true);Note("USB cihazı ayrıldı; yalnızca TetherMax bağlantısı kapatıldı.");}
             if(engine!=null||systemNetwork!=null) {
-                string forwards=await Adb("forward","--list");
-                bool Has(string? endpoint)=>endpoint!=null&&forwards.Split('\n').Any(line=>line.StartsWith(selectedSerial+" ")&&line.Split((char[]?)null,StringSplitOptions.RemoveEmptyEntries).Contains(endpoint));
-                if(!Has(pairForward)||!Has(dataForward)){await Disconnect(true);Note("TetherMax USB aktarım kanalı kayboldu; yeniden bağlantı bekleniyor.");}
+                bool present=list.Any(d=>d.Serial==selectedSerial),channels=false;
+                if(present){
+                    string forwards=await Adb("forward","--list");
+                    foreach(var owned in new[]{(Local:pairForward,Remote:"io.tethermax.pair.v2"),(Local:dataForward,Remote:"io.tethermax.usb.v1")}) {
+                        if(OwnedForward.Inspect(forwards,selectedSerial!,owned.Local,owned.Remote)!=ForwardState.Missing)continue;
+                        // Preserve the worker's existing ports; never steal/rebind another mapping.
+                        try{await Adb("-s",selectedSerial!,"forward","--no-rebind",owned.Local!,"localabstract:"+owned.Remote);Note("Eksik TetherMax USB kanalı aynı portta onarıldı.");}
+                        catch(IOException error){Diagnostics.Record("usb-forward-repair",error);}
+                    }
+                    forwards=await Adb("forward","--list");
+                    channels=OwnedForward.Inspect(forwards,selectedSerial!,pairForward,"io.tethermax.pair.v2")==ForwardState.Exact&&OwnedForward.Inspect(forwards,selectedSerial!,dataForward,"io.tethermax.usb.v1")==ForwardState.Exact;
+                }
+                if(usbAvailability.Observe(present,channels)){await Disconnect(true);Note("USB cihazı/aktarım kanalı iki denetimde yok; yalnızca TetherMax bağlantısı kapatıldı.");}
             }
             if(engine==null&&systemNetwork==null&&!busy){
                 string next=list.Count>0?"USB telefon hazır · bağlantı kapalı":unauthorized?"Telefon bulundu · ADB izni bekleniyor":"Yetkili USB telefonu bulunamadı";
@@ -241,6 +345,7 @@ internal sealed partial class Dashboard : Window
             Phase(ConnectionPhase.StartingEngine,"Ağ motoru hazırlanıyor");
             engine=Process.Start(start)??throw new IOException("Go motoru başlatılamadı.");engine.StandardInput.NewLine="\n";await engine.StandardInput.WriteLineAsync(secret);await engine.StandardInput.FlushAsync();secret="";
             _=ReadTelemetry(engine);
+            _=DrainEngineErrors(engine);
             await Readiness.WaitForListener(socksPort,()=>engine.HasExited,session.Token);
             state.Text="USB eşleşti · SOCKS hazır";Note("127.0.0.1:"+socksPort+" hazır. İnternet testi ile veri yolunu doğrulayın. Sistem geneli yönlendirme kapalı.");
         }catch(Exception ex){await Cleanup(wantsDaily);Note("Bağlantı: "+ex.Message);throw;}
@@ -255,10 +360,15 @@ internal sealed partial class Dashboard : Window
     async Task Cleanup(bool preserveDaily=false)
     {
         if(!preserveDaily)wantsDaily=false;
+        usbAvailability.Reset();
         if(systemNetwork!=null){await systemNetwork.DisposeAsync();systemNetwork=null;}
         session?.Cancel();session?.Dispose();session=null;
         if(engine!=null){try{if(!engine.HasExited){engine.Kill();await engine.WaitForExitAsync();}}catch{}engine.Dispose();engine=null;}
-        if(selectedSerial!=null)foreach(var endpoint in new[]{pairForward,dataForward})if(endpoint!=null)try{await Adb("-s",selectedSerial,"forward","--remove",endpoint);}catch(Exception ex){Note("Forward temizliği: "+ex.Message);}
+        if(selectedSerial!=null&&pairForward!=null)try {
+            string listing=await Adb("forward","--list");
+            foreach(var owned in new[]{(Local:pairForward,Remote:"io.tethermax.pair.v2"),(Local:dataForward,Remote:"io.tethermax.usb.v1")})
+                if(OwnedForward.Inspect(listing,selectedSerial,owned.Local,owned.Remote)==ForwardState.Exact)await Adb("-s",selectedSerial,"forward","--remove",owned.Local!);
+        }catch(Exception error){Diagnostics.Record("usb-owned-cleanup",error);Note("USB kanal temizliği ertelendi; yabancı kanallar korunuyor.");}
         connectedAt=null;sessionDetails.Text="Bağlantı kapalı";pairForward=null;dataForward=null;connection.Advance(ConnectionPhase.Idle,"Bağlantı kapalı");state.Text="Bağlantı kapalı";if(tray!=null)tray.Icon=new System.Drawing.Icon(Path.Combine(root,"Assets","waiting.ico"));
         trafficPanel.Reset();UpdateControls();
     }
@@ -272,12 +382,14 @@ internal sealed partial class Dashboard : Window
     }
     async Task ConnectSystemNetwork(bool diagnostic=true,bool automatic=false)
     {
+        // Elevation always needs a fresh user action, including after failures.
+        if(automatic){wantsDaily=false;Stage("Yeniden bağlanmak için Bağlan seçin");return;}
         if(closing){Stage("Uygulama kapanıyor; bağlantı başlatılamaz.");return;}
         if(connecting||busy){Stage("Bağlantı işlemi sürüyor · tamamlanmasını bekleyin veya İptal seçin.");return;}
         if(systemNetwork!=null){Stage(systemNetwork.Active?"TetherMax oturumu etkin · durum doğrulaması sürüyor.":"Önceki oturum kurtarılıyor · tamamlanınca yeniden deneyin.");return;}
         if(!automatic)reconnectAttempts=0;
         if(reconnectAttempts>=5){wantsDaily=false;reconnectAttempts=0;Stage("Otomatik denemeler durdu · yeniden Bağlan seçin");return;}
-        connecting=true;userCanceled=false;connection.Begin();bool ownsOperation=false;
+        connecting=true;userCanceled=false;usbAvailability.Reset();connection.Begin();bool ownsOperation=false;
         session??=new CancellationTokenSource(TimeSpan.FromSeconds(100));
         try {
             Phase(ConnectionPhase.DetectingPhone,"Telefon algılanıyor");
@@ -294,7 +406,9 @@ internal sealed partial class Dashboard : Window
         }
         catch(Exception e) {
             if(e is UnauthorizedAccessException)wantsDaily=false;
-            if(ownsOperation)await Cleanup(wantsDaily);else {session?.Cancel();session?.Dispose();session=null;}
+            wantsDaily=false;
+            try{if(ownsOperation)await Cleanup();else {session?.Cancel();session?.Dispose();session=null;}}
+            catch(Exception recovery){Phase(ConnectionPhase.Failed,"Kurtarma bekliyor · "+recovery.Message);return;}
             var phase=e is OperationCanceledException&&userCanceled?ConnectionPhase.Idle:ConnectionPhase.Failed;
             connection.Advance(phase,e.Message);
             Stage(e is OperationCanceledException?(userCanceled?"Bağlantı iptal edildi":"Hazır olma süresi aşıldı · yeniden deneyin"):"Bağlantı hatası · "+e.Message);
@@ -335,7 +449,7 @@ internal sealed partial class Dashboard : Window
                     if(type=="ip-counters"&&record.RootElement.TryGetProperty("payload",out var payload)&&payload.TryGetProperty("type",out var payloadType)&&payloadType.GetString()=="traffic"){
                         var previousSettings=trafficPanel.Settings;trafficPanel.Accept(payload);if(previousSettings!=trafficPanel.Settings)SavePreferences();
                         string? cellular=payload.TryGetProperty("phoneNetwork",out var source)?source.GetString():null;
-                        if(cellularAvailability.Observe(cellular)){Phase(ConnectionPhase.Failed,"Hücresel servis yanıt vermiyor · güvenli yeniden bağlantı bekleniyor");nextReconnect=DateTime.UtcNow.AddSeconds(Readiness.BackoffSeconds(reconnectAttempts++));_ = ReleaseStoppedNetwork();}
+                        if(cellularAvailability.Observe(cellular))Note("Hücresel şebeke geçici olarak kullanılamıyor; USB oturumu korunuyor. Yeni akışlar şebeke döndüğünde yeniden çalışabilir.");
                     }
                     if(type=="network-stopped"){state.Text=record.RootElement.GetProperty("recovered").GetBoolean()?"Sistem geneli oturum durdu · ağ kurtarıldı":"Ağ kurtarması bekliyor · kurtarma gerekli";_ = ReleaseStoppedNetwork();}
                     if(type=="network-report"){
@@ -343,7 +457,7 @@ internal sealed partial class Dashboard : Window
                         string file=Path.Combine(folder,"native-"+DateTime.UtcNow.ToString("yyyyMMdd-HHmmss-fffffff")+".json");
                         using var output=new FileStream(file,FileMode.CreateNew,FileAccess.Write,FileShare.Read);byte[] bytes=Encoding.UTF8.GetBytes(message);output.Write(bytes);output.Flush(true);Note("Windows/Android ayrı sayaç raporu: "+file);
                     }
-                }catch(JsonException){}catch(IOException e){Note("Yerel rapor kaydedilemedi: "+e.Message);}
+                }catch(Exception error)when(error is JsonException or InvalidOperationException or KeyNotFoundException or FormatException or IOException){Diagnostics.Record("network-ui-report",error);Note("Bir tanılama kaydı işlenemedi; aktarım korunuyor.");}
             }),diagnostic?120:0,trafficPanel.Settings,session!.Token);secret="";
             Note(diagnostic?"Tanılama başladı · 120 saniye / 1 MiB · otomatik geri alma":"Günlük bağlantı başlatıldı · süre ve relay veri sınırı yok · durdurmak için Bağlantıyı kes");
         }catch(Exception error){if(error is System.ComponentModel.Win32Exception canceled&&canceled.NativeErrorCode==1223)wantsDaily=false;if(systemNetwork!=null){await systemNetwork.DisposeAsync();systemNetwork=null;}throw;}
@@ -364,6 +478,11 @@ internal sealed partial class Dashboard : Window
     async Task ReadTelemetry(Process process)
     {
         try{while(await process.StandardOutput.ReadLineAsync() is string line){if(!ReferenceEquals(engine,process))return;try{using var data=JsonDocument.Parse(line);var value=data.RootElement;if(!value.TryGetProperty("type",out var kind))continue;if(kind.GetString()=="traffic"){string previous=trafficPanel.Settings.Mode;trafficPanel.Accept(value);if(previous!=trafficPanel.Settings.Mode)SavePreferences();}else if(kind.GetString()=="traffic-error")Note("Trafik ayarı: "+value.GetProperty("message").GetString());}catch(JsonException){}}}catch(Exception ex){if(ReferenceEquals(engine,process)&&!closing)Note("Telemetri: "+ex.Message);}
+    }
+    async Task DrainEngineErrors(Process process) {
+        bool noted=false;
+        try{while(await process.StandardError.ReadLineAsync() is string){if(!ReferenceEquals(engine,process))return;if(!noted){noted=true;Note("Motor hata çıkışı bildirdi; bağlantı durumu denetleniyor.");}}}
+        catch(Exception error){if(ReferenceEquals(engine,process)&&!closing)Diagnostics.Record("engine-stderr",error);}
     }
     async Task Diagnose()
     {

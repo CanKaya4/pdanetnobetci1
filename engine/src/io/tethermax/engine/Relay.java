@@ -44,7 +44,11 @@ public final class Relay implements AutoCloseable {
     private final Semaphore dataSlots = new Semaphore(MAX_FLOWS);
     private final Semaphore controlSlots = new Semaphore(4);
     private final Set<Closeable> live = ConcurrentHashMap.newKeySet();
-    private final ExecutorService workers = Executors.newCachedThreadPool();
+    private final ExecutorService workers = new ThreadPoolExecutor(0,MAX_FLOWS*2+24,30,TimeUnit.SECONDS,
+        new SynchronousQueue<Runnable>(),r->{Thread t=new Thread(r,"TetherMax-relay");t.setDaemon(true);return t;});
+    public final AtomicLong flowFailures=new AtomicLong(),runtimeFailures=new AtomicLong();
+    public volatile String lastFailureKind="none";
+    private void flowFailed(Throwable error){if(stopped||error instanceof EOFException)return;flowFailures.incrementAndGet();if(error instanceof RuntimeException)runtimeFailures.incrementAndGet();lastFailureKind=error.getClass().getSimpleName();}
     private volatile boolean stopped;
     public final AtomicLong uploaded = new AtomicLong();
     public final AtomicLong downloaded = new AtomicLong();
@@ -113,11 +117,12 @@ public final class Relay implements AutoCloseable {
     public synchronized void accept(Endpoint endpoint) throws IOException {
         if (stopped || !slots.tryAcquire()) { endpoint.close(); return; }
         live.add(endpoint);
-        workers.execute(() -> {
-            try { handle(endpoint); } catch (IOException ignored) {
+        try {workers.execute(() -> {
+            try { handle(endpoint); } catch (IOException | RuntimeException error) {
+                flowFailed(error);
                 // Per-flow failures close that flow; no global network mutation or retry loop.
             } finally { live.remove(endpoint); closeQuietly(endpoint); slots.release(); }
-        });
+        });}catch(RejectedExecutionException error){live.remove(endpoint);slots.release();closeQuietly(endpoint);flowFailed(error);}
     }
     private void handle(Endpoint endpoint) throws IOException {
         DataInputStream in = new DataInputStream(endpoint.input());
@@ -161,7 +166,7 @@ if(dns)host=dnsTarget(dnsAtOpen,host);
     private void tcp(Endpoint endpoint, Socket remote, InputStream in, OutputStream out) throws IOException {
         Future<?> upload = workers.submit(() -> {
             try { copy(in, remote.getOutputStream(), uploaded); remote.shutdownOutput(); }
-            catch (IOException e) { closeQuietly(remote); closeQuietly(endpoint); }
+            catch (IOException | RuntimeException e) { flowFailed(e);closeQuietly(remote); closeQuietly(endpoint); }
         });
         try { copy(remote.getInputStream(), out, downloaded); endpoint.shutdownOutput(); await(upload); }
         finally { closeQuietly(remote); closeQuietly(endpoint); upload.cancel(true); }
@@ -171,21 +176,24 @@ if(dns)host=dnsTarget(dnsAtOpen,host);
         remote.setSoTimeout(5000);
         AtomicLong lastActivity = new AtomicLong(System.nanoTime());
         Future<?> upload = workers.submit(() -> {
+            byte[] bytes=new byte[1500];
+            DatagramPacket packet=new DatagramPacket(bytes,0,flow.peer);
             try {
                 while (!stopped) {
                     int length = in.readUnsignedShort();
                     if (length > MAX_DATAGRAM) throw new IOException("oversized datagram");
-                    byte[] packet = new byte[length]; in.readFully(packet);
-                    remote.send(new DatagramPacket(packet, packet.length, flow.peer));
-                    uploaded.addAndGet(packet.length);
+                    if(bytes.length<length)bytes=new byte[length];
+                    in.readFully(bytes,0,length);packet.setData(bytes,0,length);remote.send(packet);
+                    uploaded.addAndGet(length);
                     lastActivity.set(System.nanoTime());
                 }
-            } catch (IOException e) { closeQuietly(remote); }
+            } catch (IOException | RuntimeException e) {flowFailed(e); closeQuietly(remote); }
         });
         try {
             byte[] bytes = new byte[MAX_DATAGRAM];
+            DatagramPacket packet = new DatagramPacket(bytes, bytes.length);
             while (!stopped) {
-                DatagramPacket packet = new DatagramPacket(bytes, bytes.length);
+                packet.setLength(bytes.length);
                 try { remote.receive(packet); }
                 catch (SocketTimeoutException e) {
                     if (System.nanoTime() - lastActivity.get() > TimeUnit.SECONDS.toNanos(60)) throw e;
@@ -207,7 +215,7 @@ if(dns)host=dnsTarget(dnsAtOpen,host);
         byte[] b = new byte[16384]; int n;
         while ((n = in.read(b)) != -1) { out.write(b, 0, n); out.flush(); counter.addAndGet(n); }
     }
-    private static void closeQuietly(Closeable c) { try { c.close(); } catch (IOException ignored) {} }
+    private static void closeQuietly(Closeable c) { try { c.close(); } catch (IOException | RuntimeException ignored) {} }
     @Override public synchronized void close() {
         stopped = true;
         for (Closeable c : live) closeQuietly(c);

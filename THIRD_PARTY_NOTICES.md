@@ -38,4 +38,13 @@ source availability and license terms; it requires a separate dependency review.
 Build-only tools: Eclipse Temurin OpenJDK (GPLv2 with Classpath Exception),
 Android SDK/build tools (their respective SDK terms), Go (BSD), GitHub Actions
 (their upstream licenses). They are not included in application downloads.
-ADB/platform-tools and Windows USB drivers are NOT bundled.
+RC10 bundles ADB/platform-tools as documented below. Windows USB drivers are not bundled.
+# RC10 bundled Android Debug Bridge
+
+The Windows MSI includes unmodified ADB 37.0.1 and its Windows libraries from
+Google's platform-tools archive. The bundled `platform-tools/NOTICE.txt` retains
+the applicable AOSP and third-party notices; `source.properties` records the
+version. Source and build instructions: https://android.googlesource.com/platform/packages/modules/adb/
+Release notes and archive: https://developer.android.com/tools/releases/platform-tools
+Archive SHA-256: `45f4d63113e895ebde0c90f194099a4676b6ac653bd28d54314a9e022bbc1a99`.
+No fastboot, flashing, driver installer or ADB server reset is included in the UI.

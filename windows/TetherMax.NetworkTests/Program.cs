@@ -95,6 +95,21 @@ class Program
             if(args.SequenceEqual(new[]{"--native-rescue"}))return await NativeTests.Rescue();
             if(args.Length==1&&args[0]=="--native-owner")return await NativeTests.Owner();
             if(args.Length!=0)throw new Exception("Unknown test mode");
+            Guid verificationId=Guid.NewGuid();int probes=0,delays=0;
+            string HealthyResult(Guid id)=>JsonSerializer.Serialize(new{adapterGuid=id,adapterBytes=new{sent=10,received=20},checks=new[]{new{name="windows-https-no-proxy",passed=true},new{name="windows-system-dns",passed=true},new{name="windows-direct-udp-dns",passed=true}}});
+            string healthy=HealthyResult(verificationId);
+            var verified=await ConnectivityRetry.Run(_=>Task.FromResult(++probes==3?healthy:"{}"),verificationId,CancellationToken.None,(_,_)=>{delays++;return Task.CompletedTask;});
+            Require(verified==healthy&&probes==3&&delays==2,"transient startup verification not retried in place");
+            probes=0;await ConnectivityRetry.Run(_=>{probes++;return Task.FromResult(HealthyResult(Guid.NewGuid()));},verificationId,CancellationToken.None,(_,_)=>Task.CompletedTask);
+            Require(probes==3,"foreign adapter accepted or retries unbounded");
+            using(var canceled=new CancellationTokenSource()){canceled.Cancel();bool refused=false;try{await ConnectivityRetry.Run(_=>throw new Exception("probe after cancel"),verificationId,canceled.Token);}catch(OperationCanceledException){refused=true;}Require(refused,"verification ignored cancellation");}
+            Console.WriteLine("PASS bounded in-place connectivity verification: late success, wrong adapter rejection, cancellation; no networking");
+            // Real Windows API, no adapter/route changes. Closing the request must release its OS handle.
+            var powerType=typeof(Watchdog).Assembly.GetType("TetherMax.Network.TransferPower")!;
+            var power=(IDisposable)Activator.CreateInstance(powerType)!;
+            var powerHandle=(Microsoft.Win32.SafeHandles.SafeFileHandle)powerType.GetField("handle",System.Reflection.BindingFlags.NonPublic|System.Reflection.BindingFlags.Instance)!.GetValue(power)!;
+            Require(!powerHandle.IsInvalid&&!powerHandle.IsClosed,"power request handle missing");power.Dispose();power.Dispose();Require(powerHandle.IsClosed,"power request leaked");
+            Console.WriteLine("PASS real Windows transfer power request acquisition, release and idempotent disposal; display not required");
             Require(Marshal.SizeOf<Wfp.Filter>()==200&&Marshal.SizeOf<Wfp.Condition>()==40&&Marshal.SizeOf<Wfp.Sublayer>()==72,"x64 WFP ABI mismatch");
             Console.WriteLine("PASS WFP x64 ABI sizes and offsets");
             string staleFolder=Path.Combine(Path.GetTempPath(),"TetherMax-stale-"+Guid.NewGuid().ToString("N"));Directory.CreateDirectory(staleFolder);
