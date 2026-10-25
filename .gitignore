@@ -1,0 +1,10 @@
+/build/
+/local.properties
+*.keystore
+*.log
+
+/.ci-tools/
+
+__pycache__/
+**/bin/
+**/obj/

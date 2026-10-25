@@ -1,0 +1,106 @@
+name: Engine builds and isolated tests
+on:
+  push:
+    branches: [main]
+    tags: ['v*-engine-preview*']
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  cloud-build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      TETHERMAX_TOOLS: ${{ github.workspace }}/.ci-tools
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16
+        with:
+          go-version: '1.26.3'
+          cache: false
+      - uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961
+        with:
+          distribution: temurin
+          java-version: '21.0.12'
+      - name: Prepare pinned Android SDK packages
+        run: '"$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;android-35" "build-tools;35.0.0"'
+      - name: Real Java to Go loopback transport tests
+        run: scripts/test.sh
+      - name: Build and verify APK
+        run: scripts/build-android.sh
+      - name: Cross-compile Windows applications
+        run: scripts/build-host.sh
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
+        with:
+          name: tethermax-engine-preview
+          path: |
+            build/artifacts/*
+            build/reports/*
+          if-no-files-found: error
+  windows-native:
+    runs-on: windows-2025
+    timeout-minutes: 20
+    env:
+      TETHERMAX_TOOLS: ${{ github.workspace }}/.ci-tools
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16
+        with:
+          go-version: '1.26.3'
+          cache: false
+      - uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961
+        with:
+          distribution: temurin
+          java-version: '21.0.12'
+      - name: Native Windows tests with Java peer; loopback only
+        shell: bash
+        run: scripts/test.sh
+      - name: Build native Windows executable and check safe default
+        shell: pwsh
+        run: |
+          Push-Location host
+          go build -trimpath -o ../build/tethermax-native.exe ./cmd/tethermax
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Pop-Location
+          ./build/tethermax-native.exe status
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          ./build/tethermax-native.exe serve
+          if ($LASTEXITCODE -ne 1) { throw 'Physical test safety gate failed' }
+          exit 0
+      - name: WPF build and offline pairing security checks
+        shell: pwsh
+        run: |
+          dotnet run --project windows/TetherMax.PairingTests -c Release
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          dotnet run --project windows/TetherMax.ConnectionTests -c Release
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          dotnet run --project windows/TetherMax.ProbeTests -c Release
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          dotnet publish windows/TetherMax.Desktop -c Release -r win-x64 --self-contained true -o build/windows-desktop
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
+        with:
+          name: windows-native-test-report
+          path: build/reports/go-test.txt
+          if-no-files-found: error
+  publish-preview:
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    needs: [cloud-build, windows-native]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+      - uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53
+        with:
+          name: tethermax-engine-preview
+          path: build
+      - name: Deliver tested preview packages through GitHub Releases
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1 || gh release create "$GITHUB_REF_NAME" --verify-tag --draft --prerelease --title 'TetherMax 0.1 — USB motor önizlemesi' --notes-file docs/release-notes.md
+          gh release upload "$GITHUB_REF_NAME" build/artifacts/tethermax-android-debug.apk build/artifacts/tethermax-windows-amd64.zip build/artifacts/tethermax-windows-arm64.zip build/artifacts/SHA256SUMS.txt build/reports/go-test.txt build/reports/apk-badging.txt --clobber
+          gh release edit "$GITHUB_REF_NAME" --draft=false --prerelease --latest=false --notes-file docs/release-notes.md
