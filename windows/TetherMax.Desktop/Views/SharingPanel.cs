@@ -9,6 +9,9 @@ using System.Windows.Media;
 using System.Windows.Threading;
 namespace TetherMax;
 internal sealed class SharingPanel : StackPanel {
+ public string StatusText=>status.Text;
+ public async Task ToggleFromTray(){if(hotspot!=null||recoveryPending)await Stop();else await Start();}
+ public async Task StopForExit(){await Stop();if(recoveryPending||changing)throw new IOException("Hotspot kurtarması tamamlanmadı; yeniden deneyin.");}
  readonly Func<SystemNetwork?> network;
  readonly TextBox ssid=new(){Text="TetherMax",MaxLength=32};
  readonly ComboBox band=new(){ItemsSource=new[]{"Otomatik","2,4 GHz · TV ve eski cihazlar","5 GHz · destekleyen cihazlar"},SelectedIndex=1};
@@ -25,7 +28,7 @@ internal sealed class SharingPanel : StackPanel {
  static void Input(Control c){c.Margin=new Thickness(0,0,0,16);c.Padding=new Thickness(12);c.FontSize=16;c.Background=UiTheme.Background;c.Foreground=UiTheme.Ink;c.BorderBrush=UiTheme.Muted;c.BorderThickness=new Thickness(1);}
  public SharingPanel(Func<SystemNetwork?> network,Func<string,Task>? applyDns=null,Func<TrafficSettings>? currentSettings=null){
   this.network=network;Margin=new Thickness(28);Children.Add(Text("Wi-Fi Hotspot",30));Children.Add(Text("USB internetinizi telefon, TV ve diğer cihazlarla paylaşın.",14));
-  var state=new StackPanel();state.Children.Add(status);state.Children.Add(source);state.Children.Add(acceptance);Children.Add(Card(state));
+  var state=new StackPanel();state.Children.Add(new RomanceScene{Mood="hotspot"});state.Children.Add(status);state.Children.Add(source);state.Children.Add(acceptance);Children.Add(Card(state));
   var settings=new StackPanel();settings.Children.Add(Text("Ağ ayarları",20));settings.Children.Add(Text("Wi-Fi ağ adı",13));Input(ssid);settings.Children.Add(ssid);settings.Children.Add(Text("WPA2 parolası · en az 8 karakter",13));Input(password);settings.Children.Add(password);settings.Children.Add(Text("Yayın bandı",13));Input(band);settings.Children.Add(band);settings.Children.Add(Text("TV için 2,4 GHz seçin. Desteklenmeyen bantta yayın başlatılmaz.",13));
   password.Password=Convert.ToHexString(RandomNumberGenerator.GetBytes(6));
   try{var saved=HotspotPreferences.Read();if(saved!=null){ssid.Text=saved.Ssid;band.SelectedIndex=saved.Band;password.Password=saved.Password;}}catch(Exception e)when(e is IOException or System.Security.Cryptography.CryptographicException or FormatException or JsonException){status.Text="Kayıtlı ağ ayarı açılamadı; ağ adı ve parolayı yeniden girin.";}

@@ -98,13 +98,15 @@ internal sealed class TrafficPanel : Border
         if(values.Length==0){canvas.Children.Add(new TextBlock{Text="Ölçüm bekleniyor",Foreground=UiTheme.Muted,FontSize=11});return;}
         double observedMax=values.Max(),max=Math.Max(observedMax,0.01);
         var scale=new TextBlock{Text=$"0 – {observedMax:F2}",Foreground=UiTheme.Muted,FontSize=11};canvas.Children.Add(scale);
+        for(int grid=1;grid<4;grid++)canvas.Children.Add(new Line{X1=0,X2=width,Y1=25+(canvas.Height-30)*grid/4,Y2=25+(canvas.Height-30)*grid/4,Stroke=UiTheme.Muted,Opacity=0.15});
         for(int series=0;series<2;series++){
             Polyline? line=null;
             for(int i=0;i<points.Count;i++){
                 double? value=series==0?points[i].First:points[i].Second;
                 if(!value.HasValue||!double.IsFinite(value.Value)){line=null;continue;}
-                if(line==null){line=new Polyline{Stroke=series==0?Brushes.DeepSkyBlue:UiTheme.Accent,StrokeThickness=2};canvas.Children.Add(line);}
-                line.Points.Add(new Point(points.Count<2?0:(double)i/(points.Count-1)*width,canvas.Height-8-value.Value/max*(canvas.Height-30)));
+                if(line==null){line=new Polyline{Stroke=series==0?new SolidColorBrush(Color.FromRgb(200,105,145)):new SolidColorBrush(Color.FromRgb(152,126,222)),StrokeThickness=2};canvas.Children.Add(line);}
+                var point=new Point(points.Count<2?0:(double)i/(points.Count-1)*width,canvas.Height-8-value.Value/max*(canvas.Height-30));line.Points.Add(point);
+                if(i%Math.Max(1,points.Count/120)==0){var hit=new Ellipse{Width=10,Height=10,Fill=Brushes.Transparent,ToolTip=$"{i+1}. örnek · {(series==0?"↓":"↑")} {value.Value:F3}"};Canvas.SetLeft(hit,point.X-5);Canvas.SetTop(hit,point.Y-5);canvas.Children.Add(hit);}
             }
         }
     }

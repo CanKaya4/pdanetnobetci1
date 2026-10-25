@@ -79,6 +79,8 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           dotnet publish windows/TetherMax.Desktop -c Release -r win-x64 --self-contained true -o build/windows-desktop
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          dotnet build/windows-desktop/TetherMax.dll --ui-self-test
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
         with:
           name: windows-native-test-report
