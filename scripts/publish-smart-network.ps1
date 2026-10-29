@@ -32,14 +32,25 @@ try{
  $sum | Set-Content -Encoding ascii build/artifacts/SHA256SUMS-smart-network-rc13.txt
  $validation | Select-Object id,head_sha,status,conclusion,html_url | ConvertTo-Json -Depth 4 | Set-Content -Encoding utf8 build/reports/rc13-cloud-ci.json
  $notes=(Get-Content -Raw -Encoding utf8 docs/smart-network-rc13.md)+"`n`nExact source: ``$Commit`` · [Passed isolated cloud validation]($($validation[0].html_url)).`n"
- $release=Request 'Post' 'releases' @{tag_name=$tag;target_commitish=$Commit;name='TetherMax Smart Network · RC13 · İlk Aşama';body=$notes;draft=$true;prerelease=$true;make_latest='false'}
+ $existing=@((Request 'Get' 'releases?per_page=50') | Where-Object {$_.tag_name -eq $tag})
+ if($existing.Count){
+  $release=$existing[0]
+  if(!$release.draft -or $release.target_commitish -ne $Commit){throw 'Existing release is not the expected exact-commit draft'}
+ }else{$release=Request 'Post' 'releases' @{tag_name=$tag;target_commitish=$Commit;name='TetherMax Smart Network · RC13 · İlk Aşama';body=$notes;draft=$true;prerelease=$true;make_latest='false'}}
  $uploadBase=$release.upload_url.Split('{')[0]
  if(([uri]$uploadBase).Host -ne 'uploads.github.com'){throw 'Unexpected upload host'}
  $files=@($manifest.assets | ForEach-Object {Join-Path 'build/artifacts' $_.name})
- $files+=@('build/artifacts/rc13-release-manifest.json','build/artifacts/SHA256SUMS-smart-network-rc13.txt','docs/smart-network-rc13.md','docs/ultimate-architecture-2026-10-30.md')
- $files+=@(Get-ChildItem build/reports/rc13-* -File | Where-Object {$_.Extension -in '.txt','.json','.png'} | ForEach-Object FullName)
+ $files+=@('build/artifacts/rc13-release-manifest.json','build/artifacts/SHA256SUMS-smart-network-rc13.txt','docs/smart-network-rc13.md','docs/ultimate-architecture-2026-10-30.md','docs/direct-usb-mobile-data-2026-10-30.md')
+ # Never publish live transcripts or machine-local installation/identity reports.
+ $reportNames=@('rc13-analysis-dark-compact.png','rc13-analysis-light.png','rc13-build.txt','rc13-cloud-ci.json','rc13-go-tests.txt','rc13-mobile.txt','rc13-msi-inspection.json','rc13-smart-network.txt','rc13-traffic.txt','rc13-ui.txt','rc13-TetherMax.ConnectionTests.txt','rc13-TetherMax.GameTests.txt','rc13-TetherMax.HotspotTests.txt','rc13-TetherMax.NetworkTests.txt','rc13-TetherMax.PairingTests.txt','rc13-TetherMax.ProbeTests.txt')
+ $files+=@($reportNames | ForEach-Object {Join-Path 'build/reports' $_})
  foreach($file in $files){
   $name=Split-Path $file -Leaf
+  $already=@($release.assets | Where-Object {$_.name -eq $name})
+  if($already.Count){
+   if($already[0].state -ne 'uploaded' -or $already[0].size -ne (Get-Item $file).Length -or $already[0].digest -ne ('sha256:'+(Get-FileHash $file -Algorithm SHA256).Hash.ToLowerInvariant())){throw "Existing draft asset differs: $name"}
+   Write-Output "Previously verified upload: $name";continue
+  }
   try{$asset=Invoke-RestMethod -Method Post -Uri ($uploadBase+'?name='+[uri]::EscapeDataString($name)) -Headers $headers -ContentType 'application/octet-stream' -InFile $file}
   catch{throw "GitHub asset upload failed: $name; HTTP $([int]$_.Exception.Response.StatusCode)"}
   if($asset.size -ne (Get-Item $file).Length){throw "Uploaded asset length mismatch: $name"}
