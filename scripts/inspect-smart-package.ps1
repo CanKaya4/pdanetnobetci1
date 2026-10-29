@@ -2,16 +2,16 @@ $ErrorActionPreference='Stop'
 $taskRoot=Split-Path $PSScriptRoot -Parent
 $taskMsi=Join-Path $taskRoot 'build/artifacts/tethermax-windows-x64-1.0.0-rc13.msi'
 $installer=New-Object -ComObject WindowsInstaller.Installer
-$database=$installer.GetType().InvokeMember('OpenDatabase','InvokeMethod',$null,$installer,@($taskMsi,0))
+$database=$installer.OpenDatabase($taskMsi,[int]0)
 function Rows([string]$sql){
- $view=$database.GetType().InvokeMember('OpenView','InvokeMethod',$null,$database,@($sql))
+ $view=$database.OpenView($sql)
  try{
-  $view.GetType().InvokeMember('Execute','InvokeMethod',$null,$view,$null) | Out-Null
-  while($record=$view.GetType().InvokeMember('Fetch','InvokeMethod',$null,$view,$null)){
-   try{$record.GetType().InvokeMember('StringData','GetProperty',$null,$record,@(1))}
+  $view.Execute() | Out-Null
+  while($record=$view.Fetch()){
+   try{$record.StringData(1)}
    finally{[Runtime.InteropServices.Marshal]::FinalReleaseComObject($record) | Out-Null}
   }
- }finally{$view.GetType().InvokeMember('Close','InvokeMethod',$null,$view,$null) | Out-Null;[Runtime.InteropServices.Marshal]::FinalReleaseComObject($view) | Out-Null}
+ }finally{$view.Close() | Out-Null;[Runtime.InteropServices.Marshal]::FinalReleaseComObject($view) | Out-Null}
 }
 try{
  $version=@(Rows "SELECT Value FROM Property WHERE Property = 'ProductVersion'")

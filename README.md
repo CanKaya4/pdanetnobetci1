@@ -2,6 +2,10 @@
 
 ## Smart Network RC13 — 30 Ekim 2026
 
+**Birinci amaç değişmedi:** telefonun kendi hücresel verisini standart Android
+hotspot/RNDIS paylaşımına bağımlı olmadan doğrudan USB ile Windows'a aktarmak.
+[2026 kaynakları, kod yolu ve gerçek kabul ölçütleri](docs/direct-usb-mobile-data-2026-10-30.md).
+
 Ultimate hedefinin ilk aşaması: Windows/Android kalıcı relay veri sayacı ve
 aylık bütçe uyarıları, Windows IP sayaçları ve telemetriye dayalı teşhis,
 düşük hız CoDel hedefi düzeltmesi. **Gerçek telefon/USB/4G/5G ve 24–72 saat
