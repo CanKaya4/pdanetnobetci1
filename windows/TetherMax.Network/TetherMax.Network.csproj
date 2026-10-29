@@ -3,6 +3,6 @@
     <OutputType>Exe</OutputType><TargetFramework>net9.0-windows10.0.19041.0</TargetFramework>
     <Nullable>enable</Nullable><ImplicitUsings>enable</ImplicitUsings>
     <PlatformTarget>x64</PlatformTarget><AssemblyName>TetherMax.Network</AssemblyName>
-    <Version>1.0.0-rc.10</Version>
+    <Version>1.0.0-rc.12</Version>
   </PropertyGroup>
-</Project>
+<ItemGroup><Compile Include="../TetherMax.Desktop/Models/GameFocusSettings.cs" Link="GameFocusSettings.cs"/></ItemGroup></Project>

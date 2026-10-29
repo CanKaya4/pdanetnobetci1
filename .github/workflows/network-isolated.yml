@@ -27,6 +27,10 @@ jobs:
           $sources=Get-ChildItem engine/src,engine/test -Recurse -Filter *.java | ForEach-Object FullName
           javac --release 8 -Xlint:all,-options -Werror -d build/engine-classes $sources
           if($LASTEXITCODE){throw 'Java build failed'}
+          dotnet run --project windows/TetherMax.GameTests -c Release
+          if($LASTEXITCODE){throw 'Isolated game tuning recovery tests failed'}
+          dotnet run --project windows/TetherMax.SmartNetworkTests -c Release
+          if($LASTEXITCODE){throw 'Isolated usage and diagnosis tests failed'}
           dotnet run --project windows/TetherMax.NetworkTests -c Release
           if($LASTEXITCODE){throw 'Offline network tests failed'}
           dotnet publish windows/TetherMax.Network -c Release -r win-x64 --self-contained true -o build/windows-network

@@ -11,7 +11,7 @@ internal sealed class LiveTrafficChart : FrameworkElement {
  void Label(DrawingContext d,string text,Point point)=>d.DrawText(new FormattedText(text,System.Globalization.CultureInfo.CurrentCulture,FlowDirection.LeftToRight,new Typeface("Segoe UI"),12,UiTheme.Muted,VisualTreeHelper.GetDpi(this).PixelsPerDip),point);
  protected override void OnRender(DrawingContext d){base.OnRender(d);double width=ActualWidth,height=ActualHeight-24,max=Math.Max(0.01,samples.SelectMany(s=>new[]{s.Down??0,s.Up??0}).DefaultIfEmpty().Max());
  for(int i=0;i<4;i++)d.DrawLine(new Pen(new SolidColorBrush(Color.FromArgb(35,137,118,142)),1),new Point(0,24+i*height/3),new Point(width,24+i*height/3));
- if(!samples.Any(s=>s.Down.HasValue||s.Up.HasValue)){Label(d,"Canlı internet · Ölçüm bekleniyor ♡",new Point(0,0));return;}
+ if(!samples.Any(s=>s.Down.HasValue||s.Up.HasValue)){Label(d,"Ölçüm bekleniyor",new Point(0,0));return;}
  Label(d,$"{max:0.##} Mbps  ·  ↓ İndirme / ↑ Yükleme",new Point(0,0));
  for(int series=0;series<2;series++){var color=(Color)ColorConverter.ConvertFromString(series==0?"#C86991":"#987EDE");var points=new List<Point>();
  void Flush(){if(points.Count<2){points.Clear();return;}var shape=new StreamGeometry();using(var c=shape.Open()){c.BeginFigure(points[0],false,false);c.PolyLineTo(points.Skip(1).ToArray(),true,false);}d.DrawGeometry(null,new Pen(new SolidColorBrush(color),2.5),shape);var fill=new StreamGeometry();using(var c=fill.Open()){c.BeginFigure(new Point(points[0].X,ActualHeight),true,true);c.PolyLineTo(points.ToArray(),true,false);c.LineTo(new Point(points[^1].X,ActualHeight),true,false);}var gradient=new LinearGradientBrush(Color.FromArgb(48,color.R,color.G,color.B),Colors.Transparent,90);d.DrawGeometry(gradient,null,fill);points.Clear();}

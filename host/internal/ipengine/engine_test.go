@@ -24,6 +24,7 @@ import (
 	"net/netip"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -49,7 +50,11 @@ func fixture(t *testing.T) bridge.Transport {
 	rand.Read(token)
 	secret := hex.EncodeToString(token)
 	ctx, cancel := context.WithCancel(context.Background())
-	p := exec.CommandContext(ctx, "java", "-cp", classes, "io.tethermax.engine.TestServer")
+	javaPath := "java"
+	if home := os.Getenv("JAVA_HOME"); home != "" {
+		javaPath = filepath.Join(home, "bin", "java")
+	}
+	p := exec.CommandContext(ctx, javaPath, "-cp", classes, "io.tethermax.engine.TestServer")
 	p.Env = append(os.Environ(), "TETHERMAX_TEST_TOKEN="+secret)
 	p.Stderr = os.Stderr
 	output, err := p.StdoutPipe()

@@ -54,7 +54,7 @@ public static class Program
         Directory.EnumerateDirectories(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData),"TetherMax-Network-*"),
         folder=>new Journal(folder),ProcessIdentity.Alive,
         (journal,plan)=>Watchdog.Recover(journal,plan,new NativeBackend(journal)));
-    sealed record Request(string Transport,string Token,int MaxSeconds,long MaxPayloadBytes,string Profile="auto",double UploadMbps=0,double DownloadMbps=0,bool Adaptive=false,string DnsProfile="adguard");
+    sealed record Request(string Transport,string Token,int MaxSeconds,long MaxPayloadBytes,string Profile="auto",double UploadMbps=0,double DownloadMbps=0,bool Adaptive=false,string DnsProfile="adguard",GameFocusSettings? Focus=null);
     static async Task<string> CellularStatus(string engine,string transport,string bearer)
     {
         var start=new ProcessStartInfo(engine){UseShellExecute=false,CreateNoWindow=true,RedirectStandardInput=true,RedirectStandardOutput=true,RedirectStandardError=true};
@@ -88,7 +88,7 @@ public static class Program
         if(!Regex.IsMatch(request.Transport,"^127\\.0\\.0\\.1:[0-9]{1,5}$")||!Regex.IsMatch(request.Token,"^[a-f0-9]{32}$")||request.MaxSeconds<0||request.MaxSeconds>300||request.MaxPayloadBytes<0||request.MaxPayloadBytes>10*1024*1024||(request.MaxSeconds>0&&request.MaxPayloadBytes==0))
             throw new IOException("Invalid private transport or bounded test duration");
         if(!new[]{"auto","gaming","streaming","daily","maximum"}.Contains(request.Profile)||!double.IsFinite(request.UploadMbps)||!double.IsFinite(request.DownloadMbps)||request.UploadMbps<0||request.UploadMbps>10000||request.DownloadMbps<0||request.DownloadMbps>10000)throw new IOException("Invalid traffic profile");
-        new LiveTrafficSettings(request.Profile,request.UploadMbps,request.DownloadMbps,request.Adaptive,request.DnsProfile).Validate();
+        new LiveTrafficSettings(request.Profile,request.UploadMbps,request.DownloadMbps,request.Adaptive,request.DnsProfile,request.Focus).Validate();
         // The controller mutex is held; recover old intents before activation.
         try{RecoverStale();}
         catch(Exception e){try{await writer.WriteLineAsync(JsonSerializer.Serialize(new{type="network-error",message=e.Message}));}catch{}throw;}
@@ -122,6 +122,7 @@ public static class Program
             using var json=JsonDocument.Parse(identity);var root=json.RootElement;
             Guid guid=Guid.Parse(root.GetProperty("guid").GetString()!);string name=root.GetProperty("adapter").GetString()!;
             await Send(new{type="worker-ready",adapter=name});
+            if(request.Focus!=null)await WorkerInput(new LiveTrafficSettings(request.Profile,request.UploadMbps,request.DownloadMbps,request.Adaptive,request.DnsProfile,request.Focus).Frame());
             using var self=Process.GetCurrentProcess();
             plan=new Plan(id,guid,name,Wfp.Luid(guid),Guid.NewGuid(),Guid.NewGuid(),self.Id,self.StartTime.ToUniversalTime().Ticks,worker.Id,worker.StartTime.ToUniversalTime().Ticks);
             var backend=new NativeBackend(journal);

@@ -4,6 +4,7 @@
 package traffic
 
 import (
+	"crypto/rand"
 	"errors"
 	"math"
 	"slices"
@@ -30,14 +31,17 @@ const (
 	Bulk Class = iota
 	Interactive
 	Shared
+	Game
+	Background
 )
 
 type Settings struct {
-	DNSProfile   string  `json:"dnsProfile"`
-	Mode         Mode    `json:"mode"`
-	UploadMbps   float64 `json:"uploadMbps"`
-	DownloadMbps float64 `json:"downloadMbps"`
-	Adaptive     bool    `json:"adaptive"`
+	DNSProfile   string         `json:"dnsProfile"`
+	Mode         Mode           `json:"mode"`
+	UploadMbps   float64        `json:"uploadMbps"`
+	DownloadMbps float64        `json:"downloadMbps"`
+	Adaptive     bool           `json:"adaptive"`
+	Focus        *FocusSettings `json:"focus,omitempty"`
 }
 
 func (s Settings) Validate() error {
@@ -57,10 +61,17 @@ func (s Settings) Validate() error {
 		}
 	}
 
-	return nil
+	return s.Focus.validate()
 }
 
 type Snapshot struct {
+	SessionID                              string      `json:"sessionId"`
+	Sequence                               uint64      `json:"sequence"`
+	HostUsage                              []HostUsage `json:"hostUsage,omitempty"`
+	OtherHostBytes                         uint64      `json:"otherHostBytes"`
+	GameFocusActive                        bool        `json:"gameFocusActive"`
+	FocusStatus                            string      `json:"focusStatus"`
+	GamePackets, BackgroundPackets         uint64
 	AQM                                    string `json:"aqm"`
 	VisibleHosts                           int
 	CoDelDrops, OverlimitDrops             uint64
@@ -86,6 +97,11 @@ type observation struct {
 	upMbps, downMbps float64
 }
 type Manager struct {
+	sessionID                  string
+	sequence                   uint64
+	hostUsage                  map[uint32]*HostUsage
+	otherHostBytes             uint64
+	focus                      focusRuntime
 	visibleHosts               map[uint32]struct{}
 	packetQueues               []*PacketQueue
 	packetPending              atomic.Int64
@@ -118,7 +134,9 @@ func New(s Settings) (*Manager, error) {
 	if err := s.Validate(); err != nil {
 		return nil, err
 	}
-	m := &Manager{settings: s, lastSnapshot: time.Now()}
+	m := &Manager{settings: s, lastSnapshot: time.Now(), sessionID: rand.Text(), hostUsage: make(map[uint32]*HostUsage)}
+	m.settings.Focus = cloneFocus(s.Focus)
+	m.configureFocus(s.Focus)
 	m.resetRates()
 	m.up = newScheduler(m, false)
 	m.down = newScheduler(m, true)
@@ -140,8 +158,13 @@ func (m *Manager) Configure(s Settings) error {
 		return err
 	}
 	m.mu.Lock()
+	changed := m.settings.Mode != s.Mode || m.settings.UploadMbps != s.UploadMbps || m.settings.DownloadMbps != s.DownloadMbps || m.settings.Adaptive != s.Adaptive || m.settings.DNSProfile != s.DNSProfile
+	s.Focus = cloneFocus(s.Focus)
+	m.configureFocus(s.Focus)
 	m.settings = s
-	m.resetRates()
+	if changed {
+		m.resetRates()
+	}
 	m.mu.Unlock()
 	m.up.wake()
 	m.down.wake()
@@ -187,6 +210,12 @@ func (m *Manager) activeMode() Mode {
 func weight(mode Mode, class Class) float64 {
 	if mode == Maximum {
 		return 1
+	}
+	if class == Game {
+		return 8
+	}
+	if class == Background {
+		return .5
 	}
 	if class == Interactive {
 		if mode == Gaming {
@@ -446,7 +475,21 @@ func (m *Manager) Snapshot() Snapshot {
 	m.lastDown = m.downBytes
 	m.lastSnapshot = now
 	s := Snapshot{AQM: "socket-pacing", VisibleHosts: len(m.visibleHosts), CoDelDrops: m.codelDrops.Load(), OverlimitDrops: m.overlimitDrops.Load(), PacketPending: m.packetPending.Load(), Type: "traffic", Requested: m.settings.Mode, Active: m.activeMode(), Settings: m.settings, Games: append([]string{}, m.games...), Uploaded: m.upBytes, Downloaded: m.downBytes, UploadMbps: up, DownloadMbps: down, UploadCeilingMbps: m.upRate, DownloadCeilingMbps: m.downRate, ActiveFlows: m.active, Pending: int(m.up.pending.Load() + m.down.pending.Load()), Served: m.served, Rejected: m.rejected}
+	m.sequence++
+	s.SessionID, s.Sequence = m.sessionID, m.sequence
+	s.HostUsage, s.OtherHostBytes = m.hostUsageSnapshot(), m.otherHostBytes
 	if len(m.packetQueues) > 0 {
+		_, o, active := m.focusState(now)
+		s.GameFocusActive = active
+		s.GamePackets = m.focus.gamePackets.Load()
+		s.BackgroundPackets = m.focus.backgroundPackets.Load()
+		s.FocusStatus = "Oyun odağı bekliyor"
+		if o != nil {
+			s.FocusStatus = o.Status
+		}
+		if active {
+			s.FocusStatus = "Doğrulanmış süreç akışları öncelikli"
+		}
 		s.AQM = "host-fair CoDel IPv4"
 	}
 	if s.Active == Maximum {

@@ -1,5 +1,20 @@
 # TetherMax
 
+## Smart Network RC13 — 30 Ekim 2026
+
+Ultimate hedefinin ilk aşaması: Windows/Android kalıcı relay veri sayacı ve
+aylık bütçe uyarıları, Windows IP sayaçları ve telemetriye dayalı teşhis,
+düşük hız CoDel hedefi düzeltmesi. **Gerçek telefon/USB/4G/5G ve 24–72 saat
+RC13 kabulü henüz yapılmadı.** MultiLink, RemoteHome ve abonelik backend'i
+tamamlanmış değildir. Mevcut USB/hotspot davranışı kaynakta korunmuştur;
+operatör kota muafiyeti garanti edilmez.
+
+[Sürüm kapsamı ve testler](docs/smart-network-rc13.md) ·
+[Araştırma, sekiz hedefin durumu ve geliştirme sırası](docs/ultimate-architecture-2026-10-30.md) ·
+[APK/MSI sürümleri](https://github.com/CanKaya4/pdanetnobetci1/releases).
+
+Aşağıdaki eski sürüm kayıtları kendi tarihlerindeki durumu anlatır.
+
 ## 0.6.0 yerel durum — 24 Ekim 2026
 
 Gerçek Galaxy A56 → USB → gVisor → Wintun üzerinden normal Windows HTTPS,

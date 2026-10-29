@@ -14,6 +14,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -33,7 +34,13 @@ func TestJavaEngineEndToEnd(t *testing.T) {
 	token := hex.EncodeToString(b)
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
-	java := exec.CommandContext(ctx, "java", "-cp", classes, "io.tethermax.engine.TestServer")
+	// Windows PATH may resolve an Oracle launcher shim which spawns a child
+	// outside Process.Kill ownership, keeping inherited test output handles open.
+	javaPath := "java"
+	if home := os.Getenv("JAVA_HOME"); home != "" {
+		javaPath = filepath.Join(home, "bin", "java")
+	}
+	java := exec.CommandContext(ctx, javaPath, "-cp", classes, "io.tethermax.engine.TestServer")
 	java.Env = append(os.Environ(), "TETHERMAX_TEST_TOKEN="+token)
 	output, err := java.StdoutPipe()
 	if err != nil {

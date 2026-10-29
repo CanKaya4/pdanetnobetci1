@@ -24,8 +24,11 @@ internal sealed class App : Application {
   foreach(var item in new[]{("BackgroundBrush",UiTheme.Background),("InkBrush",UiTheme.Ink),("ButtonBrush",UiTheme.Button),("SurfaceBrush",UiTheme.Surface),("AccentBrush",UiTheme.Accent),("MutedBrush",UiTheme.Muted)})app.Resources[item.Item1]=item.Item2;
   if(selfTest){new Dashboard(true,false,true).RunOfflineUiChecks();Console.WriteLine("PASS 100 automatic connection requests never launch elevation or workers; X hides without cleanup; cancel keeps running; confirmed exit completes cleanup; same window reopens; all tabs; light/dark switching; 760/1120/1440 layouts; byte units. Offline only.");app.Shutdown();return;}
   if(args.Length>=2&&args[0]=="--render-preview") {
-   UiTheme.SetLight(args.Contains("light"));Window window=args.Contains("hotspot")?new Window{Content=new System.Windows.Controls.ScrollViewer{Content=new SharingPanel(()=>null),VerticalScrollBarVisibility=System.Windows.Controls.ScrollBarVisibility.Auto},Background=UiTheme.Background}:new Dashboard(true);var visual=(FrameworkElement)window.Content;visual.Measure(new Size(1120,850));visual.Arrange(new Rect(0,0,1120,850));visual.UpdateLayout();
-   var image=new RenderTargetBitmap(1120,850,96,96,PixelFormats.Pbgra32);image.Render(visual);
+   UiTheme.SetLight(args.Contains("light"));Window window=args.Contains("game")?new Window{Content=new System.Windows.Controls.ScrollViewer{Content=new GameFocusPanel(true),VerticalScrollBarVisibility=System.Windows.Controls.ScrollBarVisibility.Auto},Background=UiTheme.Background}:args.Contains("hotspot")?new Window{Content=new System.Windows.Controls.ScrollViewer{Content=new SharingPanel(()=>null),VerticalScrollBarVisibility=System.Windows.Controls.ScrollBarVisibility.Auto},Background=UiTheme.Background}:new Dashboard(true);
+   if(window is Dashboard previewWindow&&args.Contains("games"))previewWindow.SelectPreviewPage(2);
+   if(window is Dashboard analysisPreview&&args.Contains("analysis"))analysisPreview.SelectPreviewPage(4);
+   int width=args.Contains("compact")?760:1120;const int height=850;var visual=(FrameworkElement)window.Content;visual.Measure(new Size(width,height));visual.Arrange(new Rect(0,0,width,height));visual.UpdateLayout();
+   var image=new RenderTargetBitmap(width,height,96,96,PixelFormats.Pbgra32);image.Render(visual);
    var encoder=new PngBitmapEncoder();encoder.Frames.Add(BitmapFrame.Create(image));using(var file=File.Create(args[1]))encoder.Save(file);window.Close();app.Shutdown();return;
   }
   var dashboard=new Dashboard(false,args.Contains("--manual-start"),connectOnce:args.Contains("--connect-once"));

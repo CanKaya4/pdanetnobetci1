@@ -4,7 +4,7 @@ $root=Split-Path $PSScriptRoot -Parent
 Push-Location $root
 try {
   $env:JAVA_HOME='C:\Program Files\Android\Android Studio\jbr'
-  $env:ANDROID_SDK_ROOT=Join-Path $env:LOCALAPPDATA 'Android\Sdk'
+  $env:ANDROID_SDK_ROOT='C:\Users\Ali\AppData\Local\Android\Sdk'
   $env:PATH="$env:JAVA_HOME\bin;$env:PATH"
   $bt=Join-Path $env:ANDROID_SDK_ROOT 'build-tools\35.0.0'
   $jar=Join-Path $env:ANDROID_SDK_ROOT 'platforms\android-35\android.jar'
@@ -32,7 +32,7 @@ try {
   if((Get-AuthenticodeSignature $wintun).Status -ne 'Valid'){throw 'Wintun signature invalid'}
   Copy-Item $wintun (Join-Path $DesktopOutput 'wintun.dll')
   Copy-Item .ci-tools/wintun-0.14.1/wintun/LICENSE.txt (Join-Path $DesktopOutput 'WINTUN-LICENSE.txt')
-  $env:GOROOT=(Resolve-Path .ci-tools/go).Path; $env:GOTOOLCHAIN='go1.26.3'; $env:GOCACHE="$root\.ci-tools\go-cache"
+  $env:GOROOT=(Resolve-Path ../.tools/go).Path; $env:GOTOOLCHAIN='go1.26.3'; $env:GOCACHE="$root\.ci-tools\go-cache"
   Push-Location host
   $engineOutput=Join-Path $root (Join-Path $DesktopOutput 'tethermax-engine.exe')
   try { & "$env:GOROOT/bin/go.exe" build -trimpath -o $engineOutput ./cmd/tethermax; Check } finally {Pop-Location}

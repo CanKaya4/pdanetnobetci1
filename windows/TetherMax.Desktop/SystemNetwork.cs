@@ -52,7 +52,7 @@ internal sealed class SystemNetwork: IAsyncDisposable
         await SessionLifecycle.WaitForHelper(pipe.WaitForConnectionAsync(timeout.Token),guardian,timeout.Token);
         if(!GetNamedPipeClientProcessId(pipe.SafePipeHandle,out uint pid)||pid!=guardian.Id)throw new IOException("Ağ yardımcısının IPC kimliği eşleşmiyor.");
         var writer=new StreamWriter(pipe,new UTF8Encoding(false),4096,true){AutoFlush=true,NewLine="\n"};
-        await writer.WriteLineAsync(JsonSerializer.Serialize(new{Transport=transport,Token=token,MaxSeconds=maxSeconds,MaxPayloadBytes=maxSeconds==0?0L:1048576L,Profile=settings?.Mode??"auto",UploadMbps=settings?.UploadMbps??0,DownloadMbps=settings?.DownloadMbps??0,Adaptive=settings?.Adaptive??false,DnsProfile=settings?.DnsProfile??"adguard"}));token="";
+        await writer.WriteLineAsync(JsonSerializer.Serialize(new{Transport=transport,Token=token,MaxSeconds=maxSeconds,MaxPayloadBytes=maxSeconds==0?0L:1048576L,Profile=settings?.Mode??"auto",UploadMbps=settings?.UploadMbps??0,DownloadMbps=settings?.DownloadMbps??0,Adaptive=settings?.Adaptive??false,DnsProfile=settings?.DnsProfile??"adguard",Focus=settings?.Focus}));token="";
         commands=writer;
         heartbeat=Task.Run(async()=>{try{while(!stop.IsCancellationRequested){await Command("heartbeat");await Task.Delay(1000,stop.Token);}}catch(OperationCanceledException)when(stop.IsCancellationRequested){}catch(Exception error){Diagnostics.Record("ipc-heartbeat",error);pipe.Dispose();}});
         read=Task.Run(()=>ReadReports(report));

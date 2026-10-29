@@ -18,6 +18,7 @@ public final class TunnelService extends Service {
     private synchronized void available(Network network) {
         if (stopping || !lifecycle.acceptsNetwork() || instance != this) return;
         boolean changed=!network.equals(cellular);
+        if(changed&&relay!=null)relay.clearGamingSession();
         cellular = network;
         if(changed)powerHandler.post(()->{if(!stopping&&health!=null)health.registerSignal();});
         if (running()) status = "Hücresel bağlantı hazır; USB istemcisi bekleniyor";
@@ -55,6 +56,17 @@ public final class TunnelService extends Service {
     private final ExecutorService acceptor = Executors.newSingleThreadExecutor();
     private volatile Network cellular;
     private volatile Relay relay;
+    volatile DataShield dataShield;
+    private void sampleUsage() {
+        DataShield store=dataShield;Relay current=relay;if(store==null||current==null)return;
+        try{
+            int warning=store.sample(current.uploaded.get(),current.downloaded.get());
+            if(warning>0){NotificationManager notifications=getSystemService(NotificationManager.class);
+                notifications.notify(13,new Notification.Builder(this,"data-shield").setContentTitle("DataShield · bütçe uyarısı")
+                    .setContentText("Aylık TetherMax veri bütçesinin %"+warning+" eşiği aşıldı. İnternet devam ediyor.")
+                    .setSmallIcon(getResources().getIdentifier("tethermax_notification","drawable",getPackageName())).setAutoCancel(true).build());}
+        }catch(RuntimeException unavailable){android.util.Log.w("TetherMax","Usage checkpoint or notification unavailable");}
+    }
     private final DnsOverHttps encryptedDns=new DnsOverHttps();
     private volatile LocalServerSocket listener;
     private UsbPairing pairing;
@@ -62,7 +74,10 @@ public final class TunnelService extends Service {
     private PowerManager.WakeLock transferWake;
     private volatile ModemHealth health;
     ModemHealth health(){return health;}
-    static boolean reducedWork(){TunnelService s=instance;ModemHealth h=s==null?null:s.health;return h!=null&&h.reduced;}
+    static boolean reducedWork(){TunnelService s=instance;ModemHealth h=s==null?null:s.health;return (h!=null&&h.reduced)||(s!=null&&s.relay!=null&&s.relay.gamingActive());}
+    static boolean savedGamingAssist(Context context){return context.getSharedPreferences("traffic",MODE_PRIVATE).getBoolean("gamingAssist",true);}
+    static void requestGamingAssist(Context context,boolean enabled){context.getSharedPreferences("traffic",MODE_PRIVATE).edit().putBoolean("gamingAssist",enabled).apply();TunnelService s=instance;if(s!=null&&s.relay!=null)s.relay.setGamingAssist(enabled);}
+    String gamingStatus(){Relay r=relay;return r==null?"Android oyun desteği · motor bekleniyor":r.gamingStatus();}
     void schedulePowerCheck(){powerHandler.removeCallbacks(maintainPower);if(!stopping)powerHandler.post(maintainPower);}
     private long wakeRenewAt;
     private volatile long usbAcceptedAt;
@@ -73,6 +88,7 @@ public final class TunnelService extends Service {
     private final Runnable maintainPower=new Runnable(){public void run(){
         if(stopping)return;
         Relay current=relay;
+        sampleUsage();
         boolean connected=current!=null&&HostLease.fresh(System.nanoTime(),current.hostTelemetryNanos,stopping);
         if(connected){if(transferWake==null){transferWake=getSystemService(PowerManager.class).newWakeLock(PowerManager.PARTIAL_WAKE_LOCK,"TetherMax:UsbTransfer");transferWake.setReferenceCounted(false);}long now=SystemClock.elapsedRealtime();if(!transferWake.isHeld()||now>=wakeRenewAt){transferWake.acquire(20000L);wakeRenewAt=now+10000;}}
         else if(transferWake!=null&&transferWake.isHeld())transferWake.release();
@@ -89,8 +105,10 @@ public final class TunnelService extends Service {
         try {
         NotificationManager notifications = getSystemService(NotificationManager.class);
         notifications.createNotificationChannel(new NotificationChannel("engine", "USB aktarım", NotificationManager.IMPORTANCE_LOW));
+        notifications.createNotificationChannel(new NotificationChannel("data-shield","Veri bütçesi",NotificationManager.IMPORTANCE_DEFAULT));
         startForeground(1, new Notification.Builder(this, "engine").setContentTitle("TetherMax USB motoru").setContentText("Hücresel bağlantı bekleniyor").setSmallIcon(getResources().getIdentifier("tethermax_notification", "drawable", getPackageName())).build());
         // Optional telemetry failure must never prevent the transfer engine starting.
+        try{dataShield=new DataShield(this);}catch(RuntimeException unavailable){dataShield=null;}
         health=new ModemHealth(this);
         try { health.start(); } catch(RuntimeException unavailable) { health.close();health=null; }
         manager = getSystemService(ConnectivityManager.class);
@@ -102,7 +120,7 @@ public final class TunnelService extends Service {
                 synchronized(TunnelService.this){if(!stopping&&network.equals(cellular))networkInfo="CELLULAR · Network "+network+" · "+properties.getInterfaceName();}
             }
             @Override public void onLost(Network network) {
-                synchronized(TunnelService.this) { if (!stopping && lifecycle.acceptsNetwork() && network.equals(cellular)) { cellular = null; status = "Hücresel ağ kesildi; yeniden bağlantı bekleniyor"; networkInfo="Hücresel ağ yok"; } }
+                synchronized(TunnelService.this) { if (!stopping && lifecycle.acceptsNetwork() && network.equals(cellular)) { cellular = null;if(relay!=null)relay.clearGamingSession(); status = "Hücresel ağ kesildi; yeniden bağlantı bekleniyor"; networkInfo="Hücresel ağ yok"; } }
             }
             @Override public void onUnavailable() { fail("cellular request",new IOException("Cellular unavailable")); }
         };
@@ -120,6 +138,15 @@ public final class TunnelService extends Service {
                     catch(IOException e){return "UNAVAILABLE";}
                 }
                 public void onMode(String mode) { getSharedPreferences("traffic",MODE_PRIVATE).edit().putString("mode",mode).apply(); }
+                public void onHostTelemetry(String telemetry)throws IOException {
+                    try {
+                        org.json.JSONObject value=new org.json.JSONObject(telemetry);
+                        if(!"traffic".equals(value.optString("type")))throw new IOException("invalid host telemetry type");
+                        boolean gaming=value.optBoolean("gameFocusActive",false)||"gaming".equals(value.optString("active"));
+                        double ceiling=value.getDouble("UploadCeilingMbps");
+                        Relay current=relay;if(current!=null)current.updateGamingSession(gaming,ceiling);
+                    }catch(org.json.JSONException|IllegalArgumentException invalid){throw new IOException("invalid host gaming telemetry",invalid);}
+                }
                 public boolean encryptedDns(){return true;}
                 public byte[] dns(String profile,byte[] query)throws IOException {
                     Network selected=network();
@@ -148,7 +175,7 @@ public final class TunnelService extends Service {
                     catch (IOException | RuntimeException e) { s.close(); throw e; }
                 }
             }, code);
-            relay.setMode(savedMode(this));relay.setDnsProfile(savedDns(this));
+            relay.setMode(savedMode(this));relay.setDnsProfile(savedDns(this));relay.setGamingAssist(savedGamingAssist(this));
             stage="USB listener";
             listener = new LocalServerSocket("io.tethermax.usb.v1");
             stage="pairing listener";
@@ -214,7 +241,10 @@ public final class TunnelService extends Service {
         pairing=null;
         if (listener != null) try { listener.close(); } catch (IOException ignored) {}
         listener=null;
-        if (relay != null) relay.close(); acceptor.shutdownNow();
+        if (relay != null) relay.close();
+        sampleUsage();
+        try{if(dataShield!=null)dataShield.save();}catch(RuntimeException unavailable){android.util.Log.w("TetherMax","Final usage checkpoint unavailable");}
+        acceptor.shutdownNow();
         relay=null;
         if (manager != null && callback != null) try { manager.unregisterNetworkCallback(callback); } catch (IllegalArgumentException ignored) {}
         cellular = null;

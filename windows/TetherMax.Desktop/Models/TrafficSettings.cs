@@ -5,10 +5,11 @@ internal sealed record TrafficSettings(
     [property:JsonPropertyName("uploadMbps")] double UploadMbps=0,
     [property:JsonPropertyName("downloadMbps")] double DownloadMbps=0,
     [property:JsonPropertyName("adaptive")] bool Adaptive=false,
-    [property:JsonPropertyName("dnsProfile")] string DnsProfile="adguard") {
+    [property:JsonPropertyName("dnsProfile")] string DnsProfile="adguard",
+    [property:JsonPropertyName("focus")] GameFocusSettings? Focus=null) {
     public bool Acknowledged(System.Text.Json.JsonElement data){
         if(!data.TryGetProperty("phoneSettingsConfirmed",out var ok)||ok.ValueKind!=System.Text.Json.JsonValueKind.True||!data.TryGetProperty("settings",out var settings))return false;
-        try{return System.Text.Json.JsonSerializer.Deserialize<TrafficSettings>(settings)==this;}catch(System.Text.Json.JsonException){return false;}
+        try{var value=System.Text.Json.JsonSerializer.Deserialize<TrafficSettings>(settings);return value!=null&&(value with{Focus=null})==(this with{Focus=null});}catch(System.Text.Json.JsonException){return false;}
     }
 }
 

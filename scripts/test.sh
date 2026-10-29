@@ -9,6 +9,8 @@ find engine/src engine/test -name '*.java' -print0 | xargs -0 javac --release 8 
 java -cp build/engine-classes io.tethermax.engine.RelayDnsTest
 java -cp build/engine-classes io.tethermax.engine.DnsOverHttpsTest
 java -cp build/engine-classes io.tethermax.engine.RelayFaultTest
+java -cp build/engine-classes io.tethermax.engine.GamingAssistTest
+java -cp build/engine-classes io.tethermax.engine.RelayGamingTest
 export TETHERMAX_TEST_CLASSES="$PWD/build/engine-classes"
 javac --release 8 -Xlint:all,-options -Werror -d build/engine-classes android/src/io/tethermax/app/ServiceState.java android/test/io/tethermax/app/ServiceStateTest.java
 java -cp build/engine-classes io.tethermax.app.ServiceStateTest
@@ -18,6 +20,8 @@ java -cp build/engine-classes io.tethermax.app.PositionQualityTest
 javac --release 8 -Xlint:all,-options -Werror -d build/engine-classes android/src/io/tethermax/app/GuardianPolicy.java android/src/io/tethermax/app/SampleHistory.java android/test/io/tethermax/app/GuardianPolicyTest.java android/test/io/tethermax/app/SampleHistoryTest.java
 java -cp build/engine-classes io.tethermax.app.GuardianPolicyTest
 java -cp build/engine-classes io.tethermax.app.SampleHistoryTest
+javac --release 8 -Xlint:all,-options -Werror -d build/engine-classes android/src/io/tethermax/app/UsageMeter.java android/test/io/tethermax/app/UsageMeterTest.java
+java -cp build/engine-classes io.tethermax.app.UsageMeterTest
 if command -v cygpath >/dev/null; then
  export TETHERMAX_TEST_CLASSES="$(cygpath -w "$PWD/build/engine-classes")"
 fi

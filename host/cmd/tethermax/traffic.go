@@ -133,6 +133,7 @@ func startTrafficRuntime(parent context.Context, cancelParent context.CancelFunc
 			case <-ticker.C:
 				ticks++
 				if ticks%2 == 1 {
+					m.RefreshFocusOwners()
 					if names, err := traffic.RunningGames(); err == nil {
 						m.SetGames(names)
 					}
@@ -193,7 +194,7 @@ func startTrafficRuntime(parent context.Context, cancelParent context.CancelFunc
 				}
 				snapshot := m.Snapshot()
 				if remote != nil {
-					if err := remote.Publish(snapshot); err != nil {
+					if err := remote.Publish(snapshot.PhoneSnapshot()); err != nil {
 						remote.Close()
 						remote = nil
 						phone = "control-unavailable"

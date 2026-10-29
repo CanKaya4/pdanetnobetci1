@@ -1,0 +1,8 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup><OutputType>Exe</OutputType><TargetFramework>net9.0</TargetFramework><Nullable>enable</Nullable><ImplicitUsings>enable</ImplicitUsings></PropertyGroup>
+  <ItemGroup>
+    <Compile Include="../TetherMax.Desktop/Models/UsageLedger.cs" Link="UsageLedger.cs" />
+    <Compile Include="../TetherMax.Desktop/Services/NetworkDoctor.cs" Link="NetworkDoctor.cs" />
+    <Compile Include="../TetherMax.Desktop/Services/SettingsFile.cs" Link="SettingsFile.cs" />
+  </ItemGroup>
+</Project>

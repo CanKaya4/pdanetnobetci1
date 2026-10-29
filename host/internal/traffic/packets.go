@@ -26,7 +26,11 @@ type codel struct {
 }
 
 func (c *codel) drop(now time.Time, sojourn time.Duration, remaining int) bool {
-	if sojourn < aqmTarget || remaining <= 1500 {
+	return c.dropTarget(now, sojourn, remaining, aqmTarget)
+}
+
+func (c *codel) dropTarget(now time.Time, sojourn time.Duration, remaining int, target time.Duration) bool {
+	if sojourn < target || remaining <= 1500 {
 		c.above = time.Time{}
 		c.dropping = false
 		return false
@@ -56,6 +60,7 @@ type ipPacket struct {
 	data  []byte
 	at    time.Time
 	class Class
+	base  Class
 }
 type packetFlow struct {
 	packets []ipPacket
@@ -71,18 +76,20 @@ type packetHost struct {
 	bytes           int
 }
 type PacketQueue struct {
-	pending              atomic.Int64
-	m                    *Manager
-	down                 bool
-	mu                   sync.Mutex
-	hosts                map[uint32]*packetHost
-	virtual              float64
-	bytes, packets       int
-	tokens, previousRate float64
-	refill               time.Time
-	wake                 chan struct{}
-	stop                 chan struct{}
-	once                 sync.Once
+	bgTokens, bgRate, bgBurst float64
+	bgRefill                  time.Time
+	pending                   atomic.Int64
+	m                         *Manager
+	down                      bool
+	mu                        sync.Mutex
+	hosts                     map[uint32]*packetHost
+	virtual                   float64
+	bytes, packets            int
+	tokens, previousRate      float64
+	refill                    time.Time
+	wake                      chan struct{}
+	stop                      chan struct{}
+	once                      sync.Once
 }
 
 func (m *Manager) PacketQueue(down bool) *PacketQueue {
@@ -183,7 +190,7 @@ func (q *PacketQueue) Enqueue(b []byte) bool {
 		f = &packetFlow{finish: h.virtual}
 		h.flows[key] = f
 	}
-	f.packets = append(f.packets, ipPacket{append([]byte(nil), b...), now, class})
+	f.packets = append(f.packets, ipPacket{data: append([]byte(nil), b...), at: now, class: class, base: class})
 	f.bytes += len(b)
 	h.bytes += len(b)
 	q.bytes += len(b)
@@ -237,40 +244,48 @@ func (q *PacketQueue) remove(h *packetHost, f *packetFlow) ipPacket {
 	q.pending.Add(-1)
 	return p
 }
-func (q *PacketQueue) selectFlow() (*packetHost, *packetFlow) {
+func (q *PacketQueue) selectFlow() (*packetHost, *packetFlow, time.Duration) {
 	var host *packetHost
 	var flow *packetFlow
+	wait := time.Hour
 	for id, h := range q.hosts {
+		var candidate *packetFlow
+		var best float64
 		for key, f := range h.flows {
 			if len(f.packets) == 0 {
 				delete(h.flows, key)
+				continue
+			}
+			p := &f.packets[0]
+			p.class = q.m.focusClass(p.data, q.down, p.base)
+			if q.bgRate > 0 && p.class == Background {
+				n := float64(len(p.data))
+				if n > q.bgBurst {
+					q.bgTokens += n - q.bgBurst
+					q.bgBurst = n
+				}
+				if n > q.bgTokens {
+					wait = min(wait, time.Duration((n-q.bgTokens)/q.bgRate*float64(time.Second)))
+					continue
+				}
+			}
+			_, weight, _ := q.m.policy(q.down, p.class)
+			score := math.Max(f.finish, h.virtual) + float64(len(p.data))/weight
+			if candidate == nil || score < best {
+				candidate = f
+				best = score
 			}
 		}
 		if len(h.flows) == 0 {
 			delete(q.hosts, id)
 			continue
 		}
-		if host == nil || h.finish < host.finish {
+		if candidate != nil && (host == nil || h.finish < host.finish) {
 			host = h
+			flow = candidate
 		}
 	}
-	if host == nil {
-		return nil, nil
-	}
-	for _, f := range host.flows {
-		_, weight, _ := q.m.policy(q.down, f.packets[0].class)
-		score := math.Max(f.finish, host.virtual) + float64(len(f.packets[0].data))/weight
-		if flow == nil {
-			flow = f
-			continue
-		}
-		_, otherWeight, _ := q.m.policy(q.down, flow.packets[0].class)
-		other := math.Max(flow.finish, host.virtual) + float64(len(flow.packets[0].data))/otherWeight
-		if score < other {
-			flow = f
-		}
-	}
-	return host, flow
+	return host, flow, wait
 }
 func (q *PacketQueue) Read(ctx context.Context) ([]byte, error) {
 	timer := time.NewTimer(time.Hour)
@@ -285,8 +300,21 @@ func (q *PacketQueue) Read(ctx context.Context) ([]byte, error) {
 		default:
 		}
 		q.mu.Lock()
-		h, f := q.selectFlow()
-		wait := time.Hour
+		now := time.Now()
+		bgRate := q.m.backgroundRate(q.down)
+		if bgRate != q.bgRate {
+			if q.bgRate == 0 {
+				q.bgBurst = 4096
+				q.bgTokens = q.bgBurst
+			}
+			q.bgRate = bgRate
+			q.bgRefill = now
+		}
+		if q.bgRate > 0 {
+			q.bgTokens = math.Min(q.bgBurst, q.bgTokens+now.Sub(q.bgRefill).Seconds()*q.bgRate)
+		}
+		q.bgRefill = now
+		h, f, wait := q.selectFlow()
 		if f != nil {
 			now := time.Now()
 			p := f.packets[0]
@@ -307,7 +335,14 @@ func (q *PacketQueue) Read(ctx context.Context) ([]byte, error) {
 				wait = time.Duration((float64(len(p.data)) - q.tokens) / rate * float64(time.Second))
 			} else {
 				p = q.remove(h, f)
-				if f.aqm.drop(now, now.Sub(p.at), f.bytes) {
+				// RFC 8290 section 5.2.2: target must allow at least one MTU
+				// transmission at the configured egress rate. A fixed 5 ms target
+				// needlessly signals congestion on slow mobile links/user caps.
+				target := aqmTarget
+				if rate > 0 {
+					target = max(target, time.Duration(float64(max(1500, len(p.data)))/rate*float64(time.Second)))
+				}
+				if f.aqm.dropTarget(now, now.Sub(p.at), f.bytes, target) {
 					q.m.codelDrops.Add(1)
 					q.mu.Unlock()
 					continue
@@ -315,12 +350,20 @@ func (q *PacketQueue) Read(ctx context.Context) ([]byte, error) {
 				if rate > 0 {
 					q.tokens -= float64(len(p.data))
 				}
+				if p.class == Background && q.bgRate > 0 {
+					q.bgTokens -= float64(len(p.data))
+					q.m.focus.backgroundPackets.Add(1)
+				}
+				if p.class == Game {
+					q.m.focus.gamePackets.Add(1)
+				}
 				q.virtual = math.Max(q.virtual, h.finish)
 				h.finish = q.virtual + float64(len(p.data))
 				h.virtual = math.Max(h.virtual, f.finish)
 				f.finish = h.virtual + float64(len(p.data))/weight
 				q.mu.Unlock()
 				q.m.recordWait(now.Sub(p.at))
+				q.m.recordHostPacket(p.data, q.down)
 				return p.data, nil
 			}
 		}

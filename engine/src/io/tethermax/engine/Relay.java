@@ -25,6 +25,7 @@ public final class Relay implements AutoCloseable {
         default String networkInfo() { return "fixture"; }
         default void onMode(String mode) { }
         default void onDnsProfile(String profile) { }
+        default void onHostTelemetry(String telemetry) throws IOException { }
         default boolean encryptedDns(){return false;}
         default byte[] dns(String profile,byte[] query)throws IOException{throw new IOException("Encrypted DNS unavailable");}
     }
@@ -53,6 +54,12 @@ public final class Relay implements AutoCloseable {
     public final AtomicLong uploaded = new AtomicLong();
     public final AtomicLong downloaded = new AtomicLong();
     private volatile String requestedMode = "auto";
+    private final GamingAssist gaming=new GamingAssist();
+    public void setGamingAssist(boolean enabled){gaming.setEnabled(enabled);}
+    public void updateGamingSession(boolean active,double uploadMbps){gaming.update(System.nanoTime(),active,uploadMbps);}
+    public void clearGamingSession(){gaming.clear();}
+    public boolean gamingActive(){return gaming.active(System.nanoTime(),"gaming".equals(requestedMode));}
+    public String gamingStatus(){if(!gaming.enabled())return "Android oyun desteği · kapalı";return "Android oyun desteği · "+(gamingActive()?"etkin":"bekliyor")+" · büyük TCP yükleme tavanı "+String.format(Locale.ROOT,"%.3f",gaming.bulkMbps(System.nanoTime()))+" Mbps (0: tavan yok) · bekletilen yazma "+gaming.waits()+" · toplam bekleme "+gaming.waitedMicros()+" µs";}
     private volatile String dnsProfile = "system";
     private volatile String dnsError;
     public String dnsError(){return dnsError;}
@@ -104,7 +111,8 @@ public final class Relay implements AutoCloseable {
                 int size=in.readUnsignedShort();if(size<2||size>4096)throw new IOException("invalid telemetry length");
                 byte[] bytes=new byte[size];in.readFully(bytes);
                 if(bytes[0]!='{'||bytes[size-1]!='}')throw new IOException("invalid telemetry framing");
-                hostTelemetry=new String(bytes,StandardCharsets.UTF_8);hostTelemetryNanos=System.nanoTime();out.writeByte(0);out.flush();
+                String telemetry=new String(bytes,StandardCharsets.UTF_8);dialer.onHostTelemetry(telemetry);
+                hostTelemetry=telemetry;hostTelemetryNanos=System.nanoTime();out.writeByte(0);out.flush();
             } else throw new IOException("unknown control command");
         }
     }
@@ -211,13 +219,20 @@ if(dns)host=dnsTarget(dnsAtOpen,host);
         catch (InterruptedException e) { Thread.currentThread().interrupt(); throw new IOException(e); }
         catch (ExecutionException e) { throw new IOException(e.getCause()); }
     }
-    private static void copy(InputStream in, OutputStream out, AtomicLong counter) throws IOException {
+    private void copy(InputStream in, OutputStream out, AtomicLong counter) throws IOException {
         byte[] b = new byte[16384]; int n;
-        while ((n = in.read(b)) != -1) { out.write(b, 0, n); out.flush(); counter.addAndGet(n); }
+        while ((n = in.read(b,0,gamingActive()?4096:b.length)) != -1) {
+            if(counter==uploaded&&n>1200&&gamingActive()){
+                // Live mode may change after a 16 KiB read. Split locally rather
+                // than dropping bytes or feeding an oversized pacing request.
+                for(int offset=0;offset<n;){int size=Math.min(4096,n-offset);gaming.await(size);out.write(b,offset,size);out.flush();counter.addAndGet(size);offset+=size;}
+            }else{out.write(b,0,n);out.flush();counter.addAndGet(n);}
+        }
     }
     private static void closeQuietly(Closeable c) { try { c.close(); } catch (IOException | RuntimeException ignored) {} }
     @Override public synchronized void close() {
         stopped = true;
+        gaming.clear();
         for (Closeable c : live) closeQuietly(c);
         workers.shutdownNow();
     }

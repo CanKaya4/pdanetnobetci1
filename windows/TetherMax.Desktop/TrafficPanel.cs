@@ -21,6 +21,7 @@ internal sealed class TrafficPanel : Border
     readonly Canvas delay=new(){Height=90,Margin=new Thickness(0,8,0,0)};
     readonly List<(double? First,double? Second)> rates=[],delays=[];
     bool loading,applying;
+    public bool VisualsPaused {get;set;}
     readonly ComboBox dns=new(){ItemsSource=new[]{"AdGuard · reklam / izleyici filtresi","AdGuard Aile","Cloudflare","Özgün DNS"},SelectedIndex=0,MinWidth=240,Margin=new Thickness(0,0,12,8)};
     static readonly string[] DnsIds={"adguard","family","cloudflare","system"};
     public event Action? StatusChanged;
@@ -86,6 +87,7 @@ internal sealed class TrafficPanel : Border
             $"Aktarılan ↓ {F(Number(data,"Downloaded"),"F0")} / ↑ {F(Number(data,"Uploaded"),"F0")} B · DNS RTT {F(Number(data,"QueryRTTMs"))} ms · Jitter {F(Number(data,"JitterMs"))} ms\n"+
             $"DNS yanıtsız %{F(Number(data,"ProbeLossPercent"))} / {F(Number(data,"ProbeSamples"),"F0")} örnek · Kuyruk P50/P95/P99: {F(Number(data,"QueueP50Ms"))}/{F(Number(data,"QueueP95Ms"))}/{F(Number(data,"QueueP99Ms"))} ms";
         StatusChanged?.Invoke();
+        if(VisualsPaused)return;
         samples.Add(DateTime.UtcNow);
         rates.Add((Number(data,"DownloadMbps"),Number(data,"UploadMbps")));delays.Add((Number(data,"QueryRTTMs"),Number(data,"JitterMs")));
         if(rates.Count>1800){rates.RemoveAt(0);delays.RemoveAt(0);samples.RemoveAt(0);}Draw(speed,Recent(rates));Draw(delay,Recent(delays));

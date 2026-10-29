@@ -1,56 +1,29 @@
+using System.Reflection;
 using System.Windows;
 using System.Windows.Media;
+using System.Windows.Media.Imaging;
 using System.Windows.Threading;
+using System.Diagnostics;
 namespace TetherMax;
-// Original resolution-independent artwork; no assets or remote requests.
+
+// Cached Imagegen poses + bounded native transitions; no frame timer during games.
 internal sealed class RomanceScene : FrameworkElement {
- readonly DispatcherTimer timer=new(){Interval=TimeSpan.FromMilliseconds(100)};
- double phase; public string Mood {get;set;}="idle";
- public RomanceScene(){Height=165;MinWidth=260;System.Windows.Automation.AutomationProperties.SetName(this,"Pembe ve lavanta aksesuarları olan iki kedi ve gül");
- timer.Tick+=(_,_)=>{if(IsVisible&&UiTheme.Animate){timer.Interval=TimeSpan.FromMilliseconds(UiTheme.Motion==2?100:250);phase+=UiTheme.Motion==2?0.1:0.25;InvalidateVisual();}};
- Loaded+=(_,_)=>timer.Start();Unloaded+=(_,_)=>timer.Stop();IsVisibleChanged+=(_,_)=>{if(IsVisible)timer.Start();else timer.Stop();};}
- static SolidColorBrush B(string color)=>new((Color)ColorConverter.ConvertFromString(color));
- internal static Geometry Ears(double x){
-  var geometry=new StreamGeometry();
-  using(var path=geometry.Open()){
-   path.BeginFigure(new Point(x-34,67),true,false);
-   path.LineTo(new Point(x-28,27),true,false);path.LineTo(new Point(x-8,48),true,false);
-   path.BeginFigure(new Point(x+8,48),true,false);
-   path.LineTo(new Point(x+28,27),true,false);path.LineTo(new Point(x+34,67),true,false);
-  }
-  geometry.Freeze();return geometry;
- }
+ static readonly BitmapImage art=Load("TetherMax.Romance"),sleep=Load("TetherMax.Romance.Sleep");
+ static readonly SolidColorBrush lavender=new(Color.FromRgb(168,143,188)),stem=new(Color.FromRgb(139,148,119));
+ readonly DispatcherTimer timer=new();readonly Stopwatch clock=Stopwatch.StartNew();
+ string mood="idle";bool paused;double blend,from,target,transitionAt,phase;
+ public string Mood{get=>mood;set{if(mood==value)return;mood=value;from=blend;target=value=="connected"||value=="hotspot"?1:0;transitionAt=clock.Elapsed.TotalSeconds;if(!CanAnimate){blend=target;InvalidateVisual();}UpdateTimer();}}
+ bool CanAnimate=>!paused&&IsLoaded&&IsVisible&&UiTheme.Animate;
+ internal void PauseForGame(bool value){paused=value;if(value){blend=target;InvalidateVisual();}UpdateTimer();}
+ void UpdateTimer(){if(CanAnimate){timer.Interval=TimeSpan.FromMilliseconds(UiTheme.Motion==2?33:100);timer.Start();}else timer.Stop();}
+ public RomanceScene(){Height=180;IsHitTestVisible=false;System.Windows.Automation.AutomationProperties.SetName(this,"Kahverengi gözlü gri kedi ve yeşil gözlü sarı kedi");timer.Tick+=(_,_)=>{if(!CanAnimate){timer.Stop();blend=target;InvalidateVisual();return;}phase=clock.Elapsed.TotalSeconds;double t=Math.Clamp((phase-transitionAt)/.85,0,1);blend=from+(target-from)*(t*t*(3-2*t));InvalidateVisual();};Loaded+=(_,_)=>UpdateTimer();Unloaded+=(_,_)=>timer.Stop();IsVisibleChanged+=(_,_)=>UpdateTimer();}
+ static BitmapImage Load(string name){using var source=Assembly.GetExecutingAssembly().GetManifestResourceStream(name)??throw new InvalidOperationException("Romantik arayüz görseli bulunamadı.");var bitmap=new BitmapImage();bitmap.BeginInit();bitmap.CacheOption=BitmapCacheOption.OnLoad;bitmap.DecodePixelWidth=640;bitmap.StreamSource=source;bitmap.EndInit();bitmap.Freeze();return bitmap;}
+ protected override void OnRender(DrawingContext drawing){base.OnRender(drawing);double width=Math.Min(ActualWidth,ActualHeight*art.PixelWidth/art.PixelHeight),height=width*art.PixelHeight/art.PixelWidth;double sway=CanAnimate?Math.Sin(phase*1.4):0;var rect=new Rect((ActualWidth-width)/2,(ActualHeight-height)/2+sway*1.4,width,height);if(blend<1){drawing.PushOpacity(1-blend);drawing.DrawImage(sleep,rect);drawing.Pop();}if(blend>0){drawing.PushOpacity(blend);drawing.DrawImage(art,rect);drawing.Pop();}if(width<140)return;foreach(double x in new[]{rect.Left+width*.07,rect.Right-width*.055}){double y=rect.Bottom-height*.2;drawing.PushTransform(new RotateTransform(sway*2,x,y));drawing.DrawLine(new Pen(stem,1),new Point(x,y),new Point(x-4,y-25));for(int i=0;i<4;i++)drawing.DrawEllipse(lavender,null,new Point(x-4+(i%2==0?-2:2),y-10-i*5),2.5,4);drawing.Pop();}}
  internal static void VerifyOfflineRendering(){
-  var culture=System.Globalization.CultureInfo.CurrentCulture;int motion=UiTheme.Motion;
-  try{UiTheme.Motion=2;foreach(string name in new[]{"tr-TR","en-US","de-DE"}){
-   System.Globalization.CultureInfo.CurrentCulture=new System.Globalization.CultureInfo(name);
-   // Fractional animation coordinates used to produce invalid geometry in tr-TR.
-   if(Ears(109.16864404853601).Bounds.IsEmpty)throw new InvalidOperationException("Empty mascot ears");
-   foreach(string mood in new[]{"idle","connecting","connected","hotspot","error"}){
-    var scene=new RomanceScene{Mood=mood,phase=0.16864404853601};
-    scene.Measure(new Size(360,165));scene.Arrange(new Rect(0,0,360,165));scene.UpdateLayout();
-    var bitmap=new System.Windows.Media.Imaging.RenderTargetBitmap(360,165,96,96,PixelFormats.Pbgra32);bitmap.Render(scene);
-    scene.timer.Stop();
-   }
-  }}finally{System.Globalization.CultureInfo.CurrentCulture=culture;UiTheme.Motion=motion;}
+  foreach(string name in new[]{"tr-TR","en-US","de-DE"}){
+   var culture=System.Globalization.CultureInfo.CurrentCulture;
+   try{System.Globalization.CultureInfo.CurrentCulture=new(name);foreach(string mood in new[]{"idle","connecting","connected","error"}){var scene=new RomanceScene{Mood=mood};scene.Measure(new Size(360,190));scene.Arrange(new Rect(0,0,360,190));scene.UpdateLayout();var bitmap=new RenderTargetBitmap(360,190,96,96,PixelFormats.Pbgra32);bitmap.Render(scene);scene.PauseForGame(true);if(scene.timer.IsEnabled||scene.blend!=scene.target)throw new InvalidOperationException("Game mode animation did not stop");}if(art.PixelWidth!=640||sleep.PixelWidth!=640)throw new InvalidOperationException("Unexpected artwork decode size");}
+   finally{System.Globalization.CultureInfo.CurrentCulture=culture;}
+  }
  }
- protected override void OnRender(DrawingContext d){base.OnRender(d);double scale=Math.Min(ActualWidth/360,ActualHeight/165);d.PushTransform(new TranslateTransform((ActualWidth-360*scale)/2,0));d.PushTransform(new ScaleTransform(scale,scale));
- var outline=new Pen(B("#89768E"),1.8);double wave=UiTheme.Animate&&UiTheme.Motion==2?Math.Sin(phase*2)*3:0;
- d.DrawEllipse(B("#B7A6F6"),null,new Point(180,148),129,5);
- for(int n=0;n<2;n++){double x=n==0?109:247;if(Mood=="connected"&&UiTheme.Animate&&UiTheme.Motion==2)x+=(n==0?1:-1)*(4+Math.Sin(phase)*3);var ribbon=B(n==0?"#EFA3BD":"#B7A6F6");
- var tail=new PathGeometry();var f=new PathFigure{StartPoint=new Point(x+30,135)};f.Segments.Add(new BezierSegment(new Point(x+75,140),new Point(x+64,100+wave),new Point(x+46,112+wave),true));tail.Figures.Add(f);d.DrawGeometry(null,new Pen(ribbon,9),tail);
- d.DrawEllipse(B("#FFF8F4"),outline,new Point(x,119),35,29);
- d.DrawGeometry(B("#FFF8F4"),outline,Ears(x));
- d.DrawEllipse(B("#FFFDFC"),outline,new Point(x,74),39,32);
- bool blink=UiTheme.Animate&&phase%5>4.7;for(int side=-1;side<=1;side+=2){if(blink||Mood=="idle")d.DrawLine(outline,new Point(x+side*14-4,73),new Point(x+side*14+4,73));else d.DrawEllipse(B("#35273F"),null,new Point(x+side*14,72),2.8,4);d.DrawEllipse(B("#F8CADB"),null,new Point(x+side*24,83),6,3);}
- d.DrawEllipse(ribbon,null,new Point(x,82),3,2);d.DrawLine(outline,new Point(x,85),new Point(x+4,88));d.DrawRoundedRectangle(ribbon,null,new Rect(x-25,100,50,10),5,5);
- d.DrawEllipse(B("#FFF8F4"),outline,new Point(x-16,141),12,6);d.DrawEllipse(B("#FFF8F4"),outline,new Point(x+16,141),12,6);
- }
- d.DrawLine(new Pen(B("#5F9B84"),3),new Point(180,144),new Point(180,105));d.DrawEllipse(B("#A6E8D5"),null,new Point(187,126),10,4);
- for(int i=0;i<5;i++){double a=i*Math.PI*2/5;d.DrawEllipse(B(i%2==0?"#EFA3BD":"#F8CADB"),null,new Point(180+Math.Cos(a)*7,103+Math.Sin(a)*7),8,7);}d.DrawEllipse(B("#99506D"),null,new Point(180,103),4,4);
- for(int i=0;i<3;i++){double x=163+i*18,y=37-(UiTheme.Motion==2?Math.Sin(phase+i)*6:0);var h=Geometry.Parse("M 0,3 C -8,-5 -12,7 0,14 C 12,7 8,-5 0,3 Z");d.PushTransform(new TranslateTransform(x,y));d.DrawGeometry(B(i==1?"#B7A6F6":"#EFA3BD"),null,h);d.Pop();}
- if(Mood=="hotspot"){for(int i=0;i<3;i++){double size=16+i*10;d.DrawEllipse(null,new Pen(B("#B7A6F6"),1.5),new Point(180,67),size,size/2);}}
- if(Mood=="error"){d.DrawLine(outline,new Point(90,63),new Point(100,67));d.DrawLine(outline,new Point(118,67),new Point(128,63));}
- if(Mood=="connecting")d.DrawLine(new Pen(B("#B7A6F6"),3),new Point(135,113),new Point(222,113));
- d.Pop();d.Pop();}
 }

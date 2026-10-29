@@ -7,3 +7,10 @@ New-Item -ItemType Directory -Force $output | Out-Null
 if($LASTEXITCODE){throw 'Lifecycle regression compilation failed'}
 & "$javaBin/java.exe" -cp $output io.tethermax.app.ServiceStateTest
 if($LASTEXITCODE){throw 'Lifecycle regression failed'}
+
+foreach($taskClass in @('HostLease','PositionQuality')) {
+ & "$javaBin/javac.exe" --release 8 -Xlint:all,-options -Werror -d $output "$taskRoot/android/src/io/tethermax/app/$taskClass.java" "$taskRoot/android/test/io/tethermax/app/$($taskClass)Test.java"
+ if($LASTEXITCODE){throw "$taskClass regression compilation failed"}
+ & "$javaBin/java.exe" -cp $output "io.tethermax.app.$($taskClass)Test"
+ if($LASTEXITCODE){throw "$taskClass regression failed"}
+}

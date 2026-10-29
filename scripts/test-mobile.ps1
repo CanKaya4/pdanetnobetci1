@@ -3,7 +3,7 @@ $taskRoot=Split-Path $PSScriptRoot -Parent
 $javaBin='C:/Program Files/Android/Android Studio/jbr/bin'
 $out=Join-Path $taskRoot 'build/mobile-tests'
 New-Item -ItemType Directory -Force $out | Out-Null
-$names=@('ServiceState','HostLease','PositionQuality','GuardianPolicy','SampleHistory')
+$names=@('ServiceState','HostLease','PositionQuality','GuardianPolicy','SampleHistory','UsageMeter')
 foreach($name in $names){
  & "$javaBin/javac.exe" -encoding UTF-8 --release 8 -Xlint:all,-options -Werror -d $out "$taskRoot/android/src/io/tethermax/app/$name.java" "$taskRoot/android/test/io/tethermax/app/$($name)Test.java"
  if($LASTEXITCODE){throw "Compilation failed: $name"}
