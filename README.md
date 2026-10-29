@@ -8,8 +8,10 @@ hotspot/RNDIS paylaşımına bağımlı olmadan doğrudan USB ile Windows'a akta
 
 Ultimate hedefinin ilk aşaması: Windows/Android kalıcı relay veri sayacı ve
 aylık bütçe uyarıları, Windows IP sayaçları ve telemetriye dayalı teşhis,
-düşük hız CoDel hedefi düzeltmesi. **Gerçek telefon/USB/4G/5G ve 24–72 saat
-RC13 kabulü henüz yapılmadı.** MultiLink, RemoteHome ve abonelik backend'i
+düşük hız CoDel hedefi düzeltmesi. **Windows ve Galaxy A56'ya kuruldu;
+standart Android tethering kapalıyken kısa doğrudan USB HTTPS/DNS/UDP kontrolü geçti.**
+[Fiziksel kabul kaydı](docs/rc13-direct-usb-acceptance-2026-10-30.md).
+24–72 saat ve geniş cihaz/4G/5G kabulü henüz yapılmadı. MultiLink, RemoteHome ve abonelik backend'i
 tamamlanmış değildir. Mevcut USB/hotspot davranışı kaynakta korunmuştur;
 operatör kota muafiyeti garanti edilmez.
 

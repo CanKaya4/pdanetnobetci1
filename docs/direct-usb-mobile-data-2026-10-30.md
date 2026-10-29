@@ -36,6 +36,16 @@ Bu kaynaklarda tüm operatörlerde/sınırsız mobil paketlerde kota ayrımını
 ortadan kaldıran doğrulanmış bir 2026 standardı bulunmadı. Üretici dokümanı,
 resmi API sözleşmesi ve gerçek tarife ölçümü birbirinden ayrılmalıdır.
 
+Güncel, doğrudan ilgili Türk Telekom kaynağı da bulundu:
+[Yeni Nesil Sınırsız İnternet Paketi koşulları](https://bireysel.turktelekom.com.tr/mobil/yeni-musteri-tarife-ve-paketleri/faturali-paketler/yeni-nesil-sinirsiz-internet-paketi).
+Sayfa, 4 Eylül 2026 ve sonrasında bu ek paketi alanlara 30 GB hotspot sınırı
+uygulandığını, daha önce alanların etkilenmediğini belirtiyor. Kullanıcının
+kampanyasının tam ürün kimliği/başlangıç tarihi yalnızca ödediği tutardan
+çıkarılamaz. Aynı sayfa kullanım bilgilerinin iki saat gecikmeli olabildiğini de
+söylüyor. Ayrı hotspot sayacı görünmüyorsa uygulama sayaçlarından operatör
+sınıflandırması türetilmez. Eski 2019 duyurusu yerine bu güncel ürün koşulu esas
+araştırma bulgusudur; kullanıcının kesin tarife sözleşmesi olduğu iddia edilmez.
+
 ## TetherMax'ın kaynak kodunda doğrulanan yol
 
 `android/src/io/tethermax/app/TunnelService.java`:
@@ -74,6 +84,10 @@ APN/DUN/TTL registry değişikliği veya telefon rooting'i eklenmedi.
 Windows Wi-Fi/Ethernet/PdaNet adaptörleri bağlantısız, /1 rotaları sahipli
 TetherMax Wintun'daydı. Bu, eski sürümün o anda standart Android USB paylaşımına
 bağımlı olmadığını gösteren teknik kanıttır; RC13 kurulum sonrası tekrar sınanmalıdır.
+
+Sonraki kullanıcı onaylı kurulumda aynı koşullar RC13 için tekrar doğrulandı:
+normal HTTPS 200, Windows sistem DNS'i ve Wintun'a bağlanmış UDP DNS'i geçti.
+[Ayrı fiziksel kabul kaydı](rc13-direct-usb-acceptance-2026-10-30.md).
 
 Operatör sınıflandırması için mevcut `controlled-usage-study.md` geçerlidir:
 aynı tarife dönemi, iki ayrı sayaç, bilinen test nesnesi, diğer trafiğin durması,
